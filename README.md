@@ -1,89 +1,70 @@
-# Multi-Floor Parking Lot System — Low-Level Design (LLD)
+# Multi-Floor Parking Lot Low-Level Design (LLD)
 
-[![Java 21](https://img.shields.io/badge/Java-21-ED8B00?style=for-the-badge&logo=openjdk&logoColor=white)](https://openjdk.org/projects/jdk/21/)
-[![Build Status](https://img.shields.io/badge/Build-Pending-yellow?style=for-the-badge&logo=apachemaven&logoColor=white)](pom.xml)
-[![Design Notes](https://img.shields.io/badge/Architecture-Design_Notes-blueviolet?style=for-the-badge)](ParkingLotDesign.md)
-
-A production-grade, object-oriented Low-Level Design for an automated Multi-Floor Parking Lot system with multi-vehicle support, dynamic spot allocation, tiered progressive fee calculation, and payment gateway integration in Java 21 adhering to clean architecture, SOLID principles, and GoF design patterns.
+A production-grade, extensible Low-Level Design (LLD) for a multi-floor, multi-gate automated parking lot system in Java 21, built using first-principles Object-Oriented Design and Gang of Four (GoF) design patterns.
 
 ---
 
-## 1. Problem Statement
+## 1. System Overview & Problem Statement
 
-### Requirements
-1. **Multi-Floor Structure**: The parking lot will have multiple floors.
-2. **Multiple Gates**: There will be multiple entry and exit gates.
-3. **Vehicle & Spot Compatibility**: 
-   - Supported vehicles: `CAR`, `BIKE`, `TRUCK`.
-   - Strict spot allocation: Vehicles must park **only** in their designated spot types (e.g., a spot for `CAR` cannot be used to park `BIKE`s).
-4. **Ticket Issuance at Entry**:
-   - When a user enters via an entry gate, the operator generates a ticket.
-   - The ticket contains: **Entry Time**, **Vehicle Number**, and **Assigned Parking Spot**.
-   - **Spot Assignment Rule**: Parking spots should be assigned as per the **nearest available spot first** (i.e. find the nearest appropriate spot for a vehicle and assign it).
-   - *Extensibility Requirement*: The way of assigning spots may change in the future (pluggable strategy).
-5. **Bill Calculation at Exit**:
-   - When the user decides to exit, they hand over the ticket to the operator at the exit gate, upon which their final bill is calculated.
-   - Bill calculation depends on two factors:
-     1. **Time spent** in the parking lot.
-     2. **Vehicle type**.
-   - *Extensibility Requirement*: This fee model may change in the future (pluggable strategy).
-6. **Payment Gateway Integration**:
-   - The system must integrate with **Razorpay** to process and manage payments.
-
----
-
-## 2. Progressive Tiered Pricing Model
-
-Billable duration is rounded **up** to the nearest whole hour ($\lceil \text{hours} \rceil$):
-
-### Hourly Rate Slabs by Vehicle Type (₹ / hour)
-
-| Vehicle Type | Hours 0 – 2 | Hours 2 – 4 | Hours 4 – 6 | Hours 6+ |
-| :--- | :---: | :---: | :---: | :---: |
-| **BIKE** | ₹20 | ₹25 | ₹30 | ₹40 |
-| **CAR** | ₹25 | ₹30 | ₹35 | ₹45 |
-| **TRUCK** | ₹50 | ₹60 | ₹65 | ₹80 |
-
-#### Calculation Example (Car parked for 5.5 hours):
-* **Ceiling Duration**: $5.5\text{ hrs} \to \mathbf{6\text{ billable hours}}$.
-* **Slab 1 (Hours 0–2)**: $2 \times ₹25 = ₹50$.
-* **Slab 2 (Hours 2–4)**: $2 \times ₹30 = ₹60$.
-* **Slab 3 (Hours 4–6)**: $2 \times ₹35 = ₹70$.
-* **Total Final Bill**: $₹50 + ₹60 + ₹70 = \mathbf{₹180}$.
+### Core Requirements
+1. **Multi-Floor Hierarchy**: Multiple physical floors, each containing designated spots for `BIKE`, `CAR`, and `TRUCK`.
+2. **Strict 1:1 Spot Compatibility**: 
+   - A Car spot cannot park bikes; a Truck spot cannot park cars.
+   - Enforced by `ParkingSpotType.canAccommodate(VehicleType)`.
+3. **Automated Ticket Issuance**:
+   - Unique UUID ticket generated on entry.
+   - Records `spotId`, `floorNumber`, `vehicle`, and `entryTime`.
+   - Thread-safe `markPaid()` guarding against duplicate payment exploitation.
+4. **Spatial Spot Allocation (Strategy Pattern)**:
+   - Pluggable allocation algorithm.
+   - Default `NearestAvailableSpotStrategy` finds the closest vacant spot using floor elevation delta first, then 2D Manhattan distance ($|x_1 - x_2| + |y_1 - y_2|$).
+5. **Progressive Tiered Hourly Slabs (Template Strategy)**:
+   - Partial hours are always rounded up to the nearest whole hour ceiling ($\lceil \text{hours} \rceil$).
+   - `SlabBasedFeeStrategy` defines the template algorithm; `TieredHourlyFeeStrategy` calculates the progressive sum over slabs.
+   - **The ₹180.00 Car Benchmark**: A Car parked for 5.5 hours = 6 billable hours:
+     - 0–2h (2 hrs @ ₹25/h) = ₹50
+     - 2–4h (2 hrs @ ₹30/h) = ₹60
+     - 4–6h (2 hrs @ ₹35/h) = ₹70
+     - **Total Base Fee = ₹180.00**.
+6. **Dynamic Amenity Services & Itemized Billing (Decorator Pattern)**:
+   - Avoids hardcoded fees by pairing a universal `AmenityServiceDecorator` with polymorphic `AmenityService` implementations:
+     - `EvChargingService`: Energy-based formula ($\text{kWh Consumed} \times \text{Rate per kWh}$).
+     - `CarWashService`: Dynamic formula ($\text{WashPackage} + \text{VehicleType Surcharge}$).
+   - `Bill` provides full itemized breakdowns showing exact line items.
+7. **Payment Adapter & Simple Factory**:
+   - External vendor SDKs (e.g. Razorpay) require amounts in paise and vendor-specific payloads.
+   - `RazorpayPaymentAdapter` bridges vendor APIs into our domain `PaymentProcessor`.
+   - `PaymentProcessorFactory` selects the correct processor from `PaymentMode` (`RAZORPAY_UPI`, `RAZORPAY_CARD`, `CASH`).
 
 ---
 
-## 3. High-Level Architecture
+## 2. Hourly Pricing Rate Matrix
 
-```mermaid
-graph TD
-    Driver([Driver]) -->|Arrives at| EG[EntryGate]
-    Driver -->|Departs via| XG[ExitGate]
-    
-    subgraph Gate & Orchestration Layer
-        EG -->|Delegates entry to| PL[ParkingLot Facade]
-        XG -->|Delegates checkout to| PL
-        PL -->|Assigns spot via| PAS[ParkingAssignmentStrategy - Strategy Pattern]
-        PL -->|Calculates bill via| FCS[FeeCalculationStrategy - Strategy Pattern]
-        PL -->|Processes payment via| PP[PaymentProcessor - Adapter Pattern]
-        PP --> RZ[RazorpayPaymentAdapter]
-    end
-
-    subgraph Core Domain Layer
-        PL --> PF[ParkingFloor]
-        PF --> PS[ParkingSpot]
-        PS --> V[Vehicle]
-    end
-
-    subgraph Billing & Accounting Layer
-        PL --> T[Ticket]
-        PL --> B[Bill]
-        B --> P[Payment Transaction]
-    end
-```
+| Vehicle Type | 0 - 2 Hours | 2 - 4 Hours | 4 - 6 Hours | 6+ Hours |
+| :--- | :--- | :--- | :--- | :--- |
+| **BIKE** | ₹20 / hr | ₹25 / hr | ₹30 / hr | ₹40 / hr |
+| **CAR** | ₹25 / hr | ₹30 / hr | ₹35 / hr | ₹45 / hr |
+| **TRUCK** | ₹50 / hr | ₹60 / hr | ₹65 / hr | ₹80 / hr |
 
 ---
 
-## 4. Documentation & Revision Links
+## 3. Design Patterns Applied
 
-* For all deep-dive architectural decisions, trade-offs, pattern analysis, and interview revision notes, see **[ParkingLotDesign.md](ParkingLotDesign.md)**.
+| Pattern | Category | Where Applied | Concrete Architectural Justification |
+| :--- | :--- | :--- | :--- |
+| **Facade** | Structural | `ParkingLot` class | Hides complex subsystem orchestration (`FloorManager`, `GateManager`, `Billing`) behind clean methods (`parkVehicle`, `processExit`). |
+| **Strategy (x2)** | Behavioral | `ParkingAssignmentStrategy`<br>`FeeCalculationStrategy` | **1.** Swaps spatial search heuristics (Nearest Spot vs Random) in $O(1)$.<br>**2.** Swaps fee math (Progressive Tiered Slabs vs Flat Rate) using `SlabBasedFeeStrategy`. |
+| **Decorator** | Structural | `AmenityServiceDecorator` on `BillableItem` | Dynamically layers polymorphic amenity services (`EvChargingService`, `CarWashService`) onto base parking charges without subclass explosions. |
+| **Adapter** | Structural | `RazorpayPaymentAdapter` | Converts proprietary 3rd-party vendor SDK calls (`ExternalRazorpayClient`) to our domain `PaymentProcessor` contract. |
+| **Factory** | Creational | `PaymentProcessorFactory` | Centralizes runtime instantiation of payment adapters based on `PaymentMode`. |
+| **Builder** | Creational | `ParkingLotBuilder` | Assembles complex multi-floor, multi-gate parking lot hierarchies cleanly. |
+
+---
+
+## 4. Architectural Deep-Dives for Revision
+
+For detailed notes on the design trade-offs, see [ParkingLotDesign.md](ParkingLotDesign.md):
+- **Strategy vs. Adapter + Factory**: Why payment is NOT a Strategy.
+- **Child-Parent Relationships**: Why `ParkingSpot` stores `floorNumber` instead of full `ParkingFloor`.
+- **Manhattan Distance**: Why grid distance ($|x_1-x_2| + |y_1-y_2|$) reflects physical driving aisles better than Euclidean straight lines.
+- **Dynamic Amenity Billing**: Why services encapsulate their own math (`AmenityService`) rather than hardcoding static fees.
