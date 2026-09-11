@@ -11,11 +11,11 @@ Design a clean, extensible, multi-floor parking lot system capable of managing h
 ### 1.2 Core Capabilities
 1. **Multi-Floor Capacity**: Multi-level floors, each containing designated spot types (`BIKE`, `CAR`, `TRUCK`).
 2. **Strict 1:1 Spot Compatibility**: A car spot cannot accommodate bikes; a truck spot cannot accommodate cars. Each vehicle maps strictly to its dedicated spot type.
-3. **Automated Ticket Issuance**: Generates an immutable entry record (`Ticket`) containing entry timestamp, assigned spot ID, vehicle plate, and ticket number.
-4. **Spatial Spot Allocation (Strategy Pattern)**: Nearest available spot across floors (calculated using floor levels and 2D Manhattan coordinates) in $O(1)$ lookup time relative to the entry gate.
+3. **Automated Ticket Issuance**: Generates an immutable entry record (`Ticket`) containing entry timestamp, assigned spot ID, floor number, vehicle plate, and ticket number.
+4. **Spatial Spot Allocation (Strategy Pattern)**: Nearest available spot across floors (calculated using floor elevation delta first, then 2D Manhattan coordinates) in $O(1)$ lookup time relative to the entry gate.
 5. **Tiered Hourly Fee Math (Template Strategy)**: Progressive fee calculation with hourly ceiling rounding ($\lceil \text{hours} \rceil$).
-6. **Dynamic Amenity Billing (Decorator Pattern)**: Universal decorator pattern wrapping polymorphic `AmenityService` implementations (EV kWh-based, Wash package-based) without hardcoding values.
-7. **Payment & Barrier Decoupling**: Pluggable payment processors (Razorpay adapter) and physical boom barrier actuator isolation.
+6. **Dynamic Amenity Billing (Polymorphic Services)**: Replaced naive Decorator pattern with an extensible `AmenityService` hierarchy (EV kWh-based, Wash package-based) directly aggregated in `Bill` for clean database serialization and itemized receipts.
+7. **Payment Gateway Integration**: Pluggable payment processors (Razorpay adapter) decoupled from core parking session orchestration.
 
 ---
 
@@ -23,12 +23,27 @@ Design a clean, extensible, multi-floor parking lot system capable of managing h
 
 | Pattern | Category | Where Applied | Concrete Architectural Justification |
 | :--- | :--- | :--- | :--- |
-| **Facade** | Structural | `ParkingLot` class | Hides complex subsystem orchestration (`FloorManager`, `GateManager`, `Billing`) from external clients, preventing Law of Demeter violations. |
+| **Facade** | Structural | `ParkingLot` class | Hides complex subsystem orchestration (`ParkingFloorManager`, `GateManager`, `BillingEngine`) from external clients, preventing Law of Demeter violations. |
 | **Strategy (x2)** | Behavioral | `ParkingAssignmentStrategy`<br>`FeeCalculationStrategy` | **1.** Swaps spatial search heuristics (Nearest Available Spot vs Random) in $O(1)$.<br>**2.** Swaps mathematical fee algorithms (Progressive Tiered Slabs vs Flat Rate) using `SlabBasedFeeStrategy`. |
-| **Decorator** | Structural | `AmenityServiceDecorator` on `BillableItem` | Dynamically wraps parking fees with optional polymorphic customer amenities (`EvChargingService`, `CarWashService`) avoiding an exponential $2^N$ subclass explosion. |
 | **Adapter** | Structural | `RazorpayPaymentAdapter` | Converts proprietary third-party SDK calls (`ExternalRazorpayClient`) into our clean domain `PaymentProcessor` contract (Rupees $\to$ Paise). |
 | **Factory** | Creational | `PaymentProcessorFactory` | Centralizes runtime instantiation of payment adapters based on user's chosen `PaymentMode` enum. |
 | **Builder** | Creational | `ParkingLotBuilder` | Constructs complex multi-floor, multi-gate parking lot hierarchies cleanly without telescoping constructors. |
+
+---
+
+### 2.1 Package Architecture & Bounded Contexts
+To adhere to the **Common Closure Principle (CCP)** and prevent the generic `model` "junk drawer" anti-pattern, components are segmented into distinct bounded contexts:
+
+* **`com.parkinglot.model`**: Physical inventory, spatial layout, and entry/exit checkpoints (`Vehicle`, `ParkingSpot`, `ParkingFloor`, `Coordinates`, `Ticket`, `Gate`).
+* **`com.parkinglot.strategy.assignment`**: Spatial spot allocation algorithms (`ParkingAssignmentStrategy`, `NearestAvailableSpotStrategy`). Separated by strategy type because spatial routing heuristics evolve independently from financial formulas.
+* **`com.parkinglot.strategy.fee`**: Mathematical pricing and duration billing algorithms (`FeeCalculationStrategy`, `PricingSlab`, `SlabBasedFeeStrategy`, `TieredHourlyFeeStrategy`, `FlatRateFeeStrategy`).
+* **`com.parkinglot.billing`**: Financial settlement domain (`Bill`, `AmenityService`, `CarWashService`, `EvChargingService`). Represents invoices and fiscal transactions rather than physical parking lot assets.
+* **`com.parkinglot.payment`**: Payment domain contract (Port) and factory orchestration (`PaymentProcessor`, `PaymentProcessorFactory`).
+  * **`com.parkinglot.payment.processor`**: Native first-party domain processors (`CashPaymentProcessor`).
+  * **`com.parkinglot.payment.adapter`**: Secondary Driven Adapters converting third-party APIs into domain contracts (`RazorpayPaymentAdapter`).
+  * **`com.parkinglot.payment.external`**: External third-party vendor SDKs and network clients (`ExternalRazorpayClient`).
+* **`com.parkinglot.builder`**: Fluent construction hierarchy (`ParkingLotBuilder`).
+* **`com.parkinglot`**: Facade entry point coordinating subsystems (`ParkingLot`).
 
 ---
 
@@ -50,8 +65,8 @@ Because syntactically it matches Strategy: an interface with multiple polymorphi
 > *"Define a family of **algorithms**, encapsulate each one, and make them interchangeable. Strategy lets the **algorithm** vary independently from clients that use it."*
 
 The keyword is **algorithm** — internal computation, sorting, searching, mathematical calculation, or spatial routing:
-* `ParkingAssignmentStrategy` (Nearest Spot vs Distributed vs Random) $\to$ True **Strategy** (spatial graph search algorithms).
-* `FeeCalculationStrategy` (Tiered Slabs vs Flat Rate vs Surge) $\to$ True **Strategy** (mathematical fee computation algorithms).
+* `com.parkinglot.strategy.assignment.ParkingAssignmentStrategy` (Nearest Spot vs Distributed vs Random) $\to$ True **Strategy** (spatial graph search algorithms).
+* `com.parkinglot.strategy.fee.FeeCalculationStrategy` (Tiered Slabs vs Flat Rate vs Surge) $\to$ True **Strategy** (mathematical fee computation algorithms).
 
 #### GoF Definition of Adapter:
 > *"Convert the interface of a class into another interface clients expect. Adapter lets classes work together that couldn't otherwise because of incompatible interfaces."*
@@ -66,74 +81,61 @@ Selecting which concrete payment adapter to instantiate based on user input (`Pa
 
 ---
 
-## 4. Deep Dive: Child-Parent Relationships & Inverted Indexing
+## 4. The Architectural Law of the Decorator Pattern: Why Invoices Reject Decorators
 
-### 4.1 Why `ParkingSpot` stores `floorNumber` instead of full `ParkingFloor`
+### 4.1 The Golden Rule: Method Execution Alteration vs. Data Aggregation
+1. **USE the Decorator Pattern for**: **In-memory, behavioral method execution alteration**
+   - Intercepting, wrapping, and augmenting live method calls (`read()`, `send()`, `draw()`, `execute()`).
+   - *Legitimate Examples*:
+     - **Java I/O Streams**: `GzipInputStream(CipherInputStream(BufferedInputStream(FileInputStream)))` modifying `read()`.
+     - **Network Middleware**: Retries, JWT auth injection, rate-limiting on `HttpClient.send()`.
+     - **AutoCAD / UI Toolkits**: `ResizableShapeDecorator(TooltipDecorator(Circle))` intercepting `draw()` and click handlers.
+2. **AVOID the Decorator Pattern for**: **Data entities that interact with Databases, Message Queues, or REST APIs**
+   - Invoices, Shopping Carts, Menus, Orders, Receipts.
+
+### 4.2 Why Decorator on an Invoice is an Anti-Pattern:
+- **Immutability & Item Removal Trap**: If a customer cancels a Car Wash 5 minutes after parking, removing an inner decorator from `WashDecorator(EvDecorator(BaseCharge))` is structurally impossible in Java without deconstructing the entire object tree. In a `List<AmenityService>`, it is a simple `list.remove(service)`.
+- **Serialization & DB Disaster**: Calling `jsonMapper.writeValueAsString()` on nested decorator instances creates recursive, nested JSON objects that cannot be queried or stored in standard relational SQL tables. A flat `List<AmenityService>` maps directly to database rows and clean JSON arrays.
+- **Dangerous Order-of-Execution Bugs**: Chaining `TaxDecorator` and `DiscountDecorator` depends on whatever order the developer nested the wrappers. Reversing the nesting causes taxes to be calculated before discounts, violating legal accounting standards.
+
+---
+
+## 5. Child-Parent Relationships & Inverted Indexing
+
+### 5.1 Why `ParkingSpot` stores `floorNumber` instead of full `ParkingFloor`
 1. **Prevents Circular Dependencies**: `Floor` holds `Map<String, ParkingSpot>`. If `Spot` also held `ParkingFloor`, circular references complicate lifecycle, serialization, and test isolation.
 2. **Normalized Foreign Key**: A spot is physically painted on a specific floor. It cannot physically exist without that floor. Therefore, `floorNumber` is an intrinsic attribute of the spot.
 3. **Mismatched Input Prevention**: When generating a `Ticket`, passing `spot` allows `Ticket` to safely extract `spotId` and `floorNumber` directly from `spot`, eliminating caller data corruption.
 
-### 4.2 Inverted Index vs. Linear Spot Scanning
-Instead of scanning every spot linearly across floors ($O(N)$), `ParkingFloor` indexes spots in `Map<String, ParkingSpot> spots`:
+### 5.2 Clean Floor Delegation (No Redundant Spot Maps)
+`ParkingFloor` owns its spots in a single `Map<String, ParkingSpot> spots`:
 - $O(1)$ duplicate spot ID detection via `putIfAbsent()`.
 - $O(1)$ unparking lookup by ID.
-- Clean stream filter for available spots matching vehicle type.
+- `ParkingLot` delegates directly to `floor.getSpot(spotId)` rather than duplicating a redundant global `spotIndex`.
 
 ---
 
-## 5. Deep Dive: Dynamic Amenity Billing & Universal Decorator Pattern
+## 6. Dynamic Amenity Billing: Polymorphic `AmenityService`
 
-### 5.1 The Anti-Pattern: Hardcoded Decorators
-Hardcoding flat values (`₹150` for EV, `₹250` for Car Wash) into decorators or enums violates reality:
-- **EV Charging** depends on electricity consumed: $\text{kWh Consumed} \times \text{Rate per kWh}$.
-- **Car Wash** depends on vehicle chassis size and package tier (Basic vs Premium Foam).
+Instead of hardcoded values, services implement `AmenityService` and encapsulate their own dynamic mathematical pricing:
+- `EvChargingService`: Energy formula ($\text{kWh Consumed} \times \text{Rate per kWh}$).
+- `CarWashService`: Package tier + Vehicle size surcharge formula.
 
-### 5.2 The Solution: Universal `AmenityServiceDecorator` + Polymorphic `AmenityService`
 ```
-[BaseParkingCharge (Strategy Output: ₹180.00)]
-                    │
-                    ▼
-[AmenityServiceDecorator(EvChargingService: 18.5 kWh @ ₹12 = ₹222.00)]
-                    │
-                    ▼
-[AmenityServiceDecorator(CarWashService: CAR - PREMIUM_FOAM = ₹300.00)]
-                    │
-                    ▼
-[Final Bill: ₹702.00 with full itemized breakdown]
-```
-
-#### Code Architecture:
-```java
-public interface AmenityService {
-    double calculateCost();
-    String getItemizedDescription();
-}
-
-public class AmenityServiceDecorator extends BillableItemDecorator {
-    private final AmenityService amenityService;
-
-    public AmenityServiceDecorator(BillableItem wrapped, AmenityService amenityService) {
-        super(wrapped);
-        this.amenityService = Objects.requireNonNull(amenityService);
-    }
-
-    @Override
-    public double getCost() {
-        return Math.round((wrappedItem.getCost() + amenityService.calculateCost()) * 100.0) / 100.0;
-    }
-
-    @Override
-    protected String getServiceLine() {
-        return amenityService.getItemizedDescription();
-    }
-}
+[Strategy: Base Parking Fee = ₹180.00]
+                   │
+                   ▼
+[Ticket: Consumed Services = { EV (18.5 kWh @ ₹12 = ₹222), Wash (Foam = ₹300) }]
+                   │
+                   ▼
+[Bill: Direct Aggregation Total = ₹702.00 with itemized line items]
 ```
 
 ---
 
-## 6. Progressive Tiered Hourly Pricing Model
+## 7. Progressive Tiered Hourly Pricing Model
 
-### 6.1 Rate Matrix
+### 7.1 Rate Matrix
 Partial hours are rounded up using ceiling math: $\text{billableHours} = \lceil \text{durationInHours} \rceil$.
 
 | Vehicle Type | 0 - 2 Hours | 2 - 4 Hours | 4 - 6 Hours | 6+ Hours |
@@ -142,7 +144,7 @@ Partial hours are rounded up using ceiling math: $\text{billableHours} = \lceil 
 | **CAR** | ₹25 / hr | ₹30 / hr | ₹35 / hr | ₹45 / hr |
 | **TRUCK** | ₹50 / hr | ₹60 / hr | ₹65 / hr | ₹80 / hr |
 
-### 6.2 The ₹180.00 Car Benchmark Walkthrough
+### 7.2 The ₹180.00 Car Benchmark Walkthrough
 **Example**: A `CAR` enters at `10:00 AM` and exits at `03:30 PM`.
 1. **Raw Duration**: 5 hours, 30 minutes = 5.5 hours.
 2. **Ceiling Rounding**: $\lceil 5.5 \rceil = 6 \text{ billable hours}$.
@@ -155,17 +157,38 @@ Partial hours are rounded up using ceiling math: $\text{billableHours} = \lceil 
 
 ---
 
-## 7. Advanced Architectural Extensions (For Discussion & Reference)
+## 8. Architectural Justification: Elimination of `Barrier` and Inclusion of `Gate` in Model
 
-### 7.1 State Pattern for Dynamic Gate Lane Reversal
-In peak rush-hour traffic (5:00 PM), lanes flip roles:
-- Entry gates dynamically transition to Exit gates (`EntryModeState` $\to$ `ExitModeState`).
-- Avoids `if/else` flag spaghetti across gate methods without restarting servers.
+### 8.1 The Pass-Through Anti-Pattern
+In tutorials or over-engineered LLD attempts, developers often create a separate `Barrier` class with simple `open()` and `close()` methods and a dedicated `gate` package.
+In practice:
+1. **Pass-Through Overhead Without Value**: Without hardware message queues, asynchronous IoT drivers, or the **Command Pattern** (e.g. queuing or undoing barrier movements), `Barrier` acts as a useless 1-line wrapper.
+2. **Law of Demeter Violation**: Invocations like `gate.getBarrier().open()` force external callers to traverse through `Gate` to reach an internal component.
+3. **Domain Reality**: `Gate` is a physical spatial model entity (residing on a floor, with 2D/3D coordinates and a gate type) that directly controls entry/exit access. Moving `Gate` into `com.parkinglot.model` and exposing `gate.open()` / `gate.close()` directly eliminates redundant packaging and ceremonial abstractions while maintaining clean domain cohesion.
 
-### 7.2 Command Pattern for Gate Hardware Decoupling
-- Hardware sensors (ANPR camera, RFID FASTag reader, inductive ground loop, guard UI) invoke `IssueTicketCommand` uniformly.
-- Physical barrier boom actuators are decoupled from domain gate logic via `OpenBarrierCommand` and `CloseBarrierCommand`.
+---
 
-### 7.3 Observer Pattern for Real-Time Display Boards
-- Real-time digital LED signage and operations monitors subscribe as `ParkingLotObserver`s.
-- Pushes `SpotOccupancyEvent` on vehicle park/vacate without wasteful polling.
+## 9. Architectural Justification: Hexagonal Organization of the Payment Bounded Context
+
+### 9.1 Why Processors, Adapters, and External APIs Are Fundamentally Different
+In naive OOP designs, everything relating to payments is dumped into a single `payment` package. This conflates three fundamentally different architectural layers:
+
+1. **The Domain Port (`com.parkinglot.payment.PaymentProcessor`)**:
+   - Represents the core domain interface for financial settlement.
+   - Clean signature (`processPayment(billId, amountInRupees)`) adhering to domain types.
+   - Orchestrated by `PaymentProcessorFactory`.
+
+2. **First-Party Domain Processors (`com.parkinglot.payment.processor.CashPaymentProcessor`)**:
+   - Direct implementations of the port for offline/internal domain workflows (e.g. cash booth settlement).
+   - Require no foreign protocol translation.
+
+3. **Structural Driven Adapters (`com.parkinglot.payment.adapter.RazorpayPaymentAdapter`)**:
+   - Implements the domain `PaymentProcessor` port while encapsulating a reference to an external vendor client.
+   - Performs currency conversion (Rupees $\to$ Paise), payload mapping, error-code translation, and network response normalization.
+
+4. **External Third-Party SDKs / Clients (`com.parkinglot.payment.external.ExternalRazorpayClient`)**:
+   - Simulates or interfaces with vendor proprietary libraries (e.g. `com.razorpay.RazorpayClient`, Stripe SDK).
+   - Uses vendor-specific data structures, currency denominations, and authentication headers.
+   - Contains zero knowledge of our parking lot domain, `Bill`, or `Ticket`.
+
+This Ports & Adapters (Hexagonal) separation guarantees that introducing Stripe, PayPal, or mock testing environments requires writing an adapter in `payment.adapter` without touching core domain rules.

@@ -1,4 +1,4 @@
-package com.parkinglot.strategy;
+package com.parkinglot.strategy.fee.slab;
 
 public record PricingSlab(int startHourInclusive, int endHourExclusive, double hourlyRate) {
     public PricingSlab {

@@ -3,17 +3,16 @@ package com.parkinglot.builder;
 import com.parkinglot.ParkingLot;
 import com.parkinglot.enums.GateType;
 import com.parkinglot.enums.ParkingSpotType;
-import com.parkinglot.gate.Barrier;
-import com.parkinglot.gate.Gate;
+import com.parkinglot.model.Gate;
 import com.parkinglot.model.Coordinates;
 import com.parkinglot.model.ParkingFloor;
 import com.parkinglot.model.ParkingSpot;
-import com.parkinglot.payment.ExternalRazorpayClient;
+import com.parkinglot.payment.external.ExternalRazorpayClient;
 import com.parkinglot.payment.PaymentProcessorFactory;
-import com.parkinglot.strategy.FeeCalculationStrategy;
-import com.parkinglot.strategy.NearestAvailableSpotStrategy;
-import com.parkinglot.strategy.ParkingAssignmentStrategy;
-import com.parkinglot.strategy.TieredHourlyFeeStrategy;
+import com.parkinglot.strategy.assignment.NearestAvailableSpotStrategy;
+import com.parkinglot.strategy.assignment.ParkingAssignmentStrategy;
+import com.parkinglot.strategy.fee.FeeCalculationStrategy;
+import com.parkinglot.strategy.fee.slab.TieredHourlyFeeStrategy;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -54,8 +53,7 @@ public class ParkingLotBuilder {
     }
 
     public ParkingLotBuilder addGate(String gateId, GateType type, int floorNumber, Coordinates coordinates) {
-        Barrier barrier = new Barrier("BARRIER-" + gateId);
-        gates.add(new Gate(gateId, type, barrier, floorNumber, coordinates));
+        gates.add(new Gate(gateId, type, floorNumber, coordinates));
         return this;
     }
 

@@ -26,11 +26,12 @@ A production-grade, extensible Low-Level Design (LLD) for a multi-floor, multi-g
      - 2–4h (2 hrs @ ₹30/h) = ₹60
      - 4–6h (2 hrs @ ₹35/h) = ₹70
      - **Total Base Fee = ₹180.00**.
-6. **Dynamic Amenity Services & Itemized Billing (Decorator Pattern)**:
-   - Avoids hardcoded fees by pairing a universal `AmenityServiceDecorator` with polymorphic `AmenityService` implementations:
+6. **Dynamic Amenity Services & Itemized Billing (Polymorphic Aggregation)**:
+   - Avoids the fragile Decorator anti-pattern on persistent invoice data in favor of clean list aggregation (`List<AmenityService>`).
+   - Dynamic self-encapsulating formulas:
      - `EvChargingService`: Energy-based formula ($\text{kWh Consumed} \times \text{Rate per kWh}$).
      - `CarWashService`: Dynamic formula ($\text{WashPackage} + \text{VehicleType Surcharge}$).
-   - `Bill` provides full itemized breakdowns showing exact line items.
+   - `Bill` provides full itemized breakdowns with clean line items, supporting standard database persistence and JSON serialization.
 7. **Payment Adapter & Simple Factory**:
    - External vendor SDKs (e.g. Razorpay) require amounts in paise and vendor-specific payloads.
    - `RazorpayPaymentAdapter` bridges vendor APIs into our domain `PaymentProcessor`.
@@ -53,9 +54,8 @@ A production-grade, extensible Low-Level Design (LLD) for a multi-floor, multi-g
 | Pattern | Category | Where Applied | Concrete Architectural Justification |
 | :--- | :--- | :--- | :--- |
 | **Facade** | Structural | `ParkingLot` class | Hides complex subsystem orchestration (`FloorManager`, `GateManager`, `Billing`) behind clean methods (`parkVehicle`, `processExit`). |
-| **Strategy (x2)** | Behavioral | `ParkingAssignmentStrategy`<br>`FeeCalculationStrategy` | **1.** Swaps spatial search heuristics (Nearest Spot vs Random) in $O(1)$.<br>**2.** Swaps fee math (Progressive Tiered Slabs vs Flat Rate) using `SlabBasedFeeStrategy`. |
-| **Decorator** | Structural | `AmenityServiceDecorator` on `BillableItem` | Dynamically layers polymorphic amenity services (`EvChargingService`, `CarWashService`) onto base parking charges without subclass explosions. |
-| **Adapter** | Structural | `RazorpayPaymentAdapter` | Converts proprietary 3rd-party vendor SDK calls (`ExternalRazorpayClient`) to our domain `PaymentProcessor` contract. |
+| **Strategy (x2)** | Behavioral | `com.parkinglot.strategy.assignment`<br>`com.parkinglot.strategy.fee` | **1.** Swaps spatial spot allocation heuristics (`NearestAvailableSpotStrategy`).<br>**2.** Swaps mathematical fee algorithms (`TieredHourlyFeeStrategy`, `FlatRateFeeStrategy`). |
+| **Adapter** | Structural | `com.parkinglot.payment.adapter.RazorpayPaymentAdapter` | Converts proprietary 3rd-party vendor SDK calls (`ExternalRazorpayClient`) to our domain `PaymentProcessor` contract. |
 | **Factory** | Creational | `PaymentProcessorFactory` | Centralizes runtime instantiation of payment adapters based on `PaymentMode`. |
 | **Builder** | Creational | `ParkingLotBuilder` | Assembles complex multi-floor, multi-gate parking lot hierarchies cleanly. |
 
