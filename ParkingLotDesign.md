@@ -28,6 +28,7 @@ Design a clean, extensible, multi-floor parking lot system capable of managing h
 | **Adapter** | Structural | `RazorpayPaymentAdapter` | Converts proprietary third-party SDK calls (`ExternalRazorpayClient`) into our clean domain `PaymentProcessor` contract (Rupees $\to$ Paise). |
 | **Factory** | Creational | `PaymentProcessorFactory` | Centralizes runtime instantiation of payment adapters based on user's chosen `PaymentMode` enum. |
 | **Builder** | Creational | `ParkingLotBuilder` | Constructs complex multi-floor, multi-gate parking lot hierarchies cleanly without telescoping constructors. |
+| **Observer** | Behavioral | `ParkingEventPublisher`<br>`ParkingEventListener` | Decouples core parking lot workflows from cross-cutting concerns (LED displays, SMS receipts, mobile app notifications, and metrics). |
 
 ---
 
@@ -37,12 +38,16 @@ To adhere to the **Common Closure Principle (CCP)** and prevent the generic `mod
 * **`com.parkinglot.model`**: Physical inventory, spatial layout, and entry/exit checkpoints (`Vehicle`, `ParkingSpot`, `ParkingFloor`, `Coordinates`, `Ticket`, `Gate`).
 * **`com.parkinglot.strategy.assignment`**: Spatial spot allocation algorithms (`ParkingAssignmentStrategy`, `NearestAvailableSpotStrategy`). Separated by strategy type because spatial routing heuristics evolve independently from financial formulas.
 * **`com.parkinglot.strategy.fee`**: Mathematical pricing and duration billing algorithms (`FeeCalculationStrategy`, `PricingSlab`, `SlabBasedFeeStrategy`, `TieredHourlyFeeStrategy`, `FlatRateFeeStrategy`).
-* **`com.parkinglot.billing`**: Financial settlement domain (`Bill`, `AmenityService`, `CarWashService`, `EvChargingService`). Represents invoices and fiscal transactions rather than physical parking lot assets.
-* **`com.parkinglot.payment`**: Payment domain contract (Port) and factory orchestration (`PaymentProcessor`, `PaymentProcessorFactory`).
+* **`com.parkinglot.service`**: Specialized subsystem controllers enforcing Single Responsibility Principle (SRP):
+  * `TicketManager`: In-memory active session ticket management, registration, and lifecycle closing.
+  * `GateController`: Physical gate access validation and boom passage control.
+* **`com.parkinglot.billing`**: Financial settlement domain (`Bill`, `BillingService`, `AmenityService`, `CarWashService`, `EvChargingService`).
+* **`com.parkinglot.payment`**: Payment domain contracts, orchestration (`PaymentService`), transaction entities (`PaymentTransaction`), and factory-selected adapters.
   * **`com.parkinglot.payment.processor`**: Native first-party domain processors (`CashPaymentProcessor`).
   * **`com.parkinglot.payment.adapter`**: Secondary Driven Adapters converting third-party APIs into domain contracts (`RazorpayPaymentAdapter`).
   * **`com.parkinglot.payment.external`**: External third-party vendor SDKs and network clients (`ExternalRazorpayClient`).
 * **`com.parkinglot.builder`**: Fluent construction hierarchy (`ParkingLotBuilder`).
+* **`com.parkinglot.event`**: Event-driven domain messaging and Observer pattern infrastructure (`ParkingEvent`, `VehicleParkedEvent`, `VehicleExitedEvent`, `ParkingEventListener`, `ParkingEventPublisher`).
 * **`com.parkinglot`**: Facade entry point coordinating subsystems (`ParkingLot`).
 
 ---
@@ -192,3 +197,50 @@ In naive OOP designs, everything relating to payments is dumped into a single `p
    - Contains zero knowledge of our parking lot domain, `Bill`, or `Ticket`.
 
 This Ports & Adapters (Hexagonal) separation guarantees that introducing Stripe, PayPal, or mock testing environments requires writing an adapter in `payment.adapter` without touching core domain rules.
+
+### 9.2 Transaction Entity & Payment Audit Trails
+A common flaw in academic LLD designs is simply calling `bill.markPaid()` with a single boolean flag, destroying all payment history. In real-world financial architectures:
+* Every payment attempt produces a `PaymentTransaction` entity recording:
+  - `paymentId` (Unique ID)
+  - `billId`
+  - `amount`
+  - `paymentMode`
+  - `attemptedAt` timestamp
+  - `status` (`PENDING`, `SUCCESS`, `FAILED`, `REFUNDED`)
+  - `transactionReference` (external gateway reference or cash receipt ID)
+  - `failureReason` (for failed attempts)
+* `Bill` maintains a thread-safe `List<PaymentTransaction> paymentHistory`, enabling retry attempts, accounting reconciliation against external vendor ledgers, and complete auditability without coupling to gateway mechanics.
+
+---
+
+## 10. Architectural Justification: Decomposing the ParkingLot Facade (Single Responsibility Principle)
+
+### 10.1 Avoiding the God Object Anti-Pattern
+In naive LLD designs, `ParkingLot` becomes a bloated "God Object" that mixes spot assignment, active ticket hashmap mutations, gate access validation, fee calculation math, payment gateway calls, and boom passage controls into single multi-responsibility methods.
+
+### 10.2 The Decomposed Delegate Architecture
+We decomposed `ParkingLot` into a pure high-level **Facade** orchestrating four specialized subsystem delegates:
+1. **`TicketManager`**: Owns active ticket storage, retrieval, and closing. Only changes if ticket storage strategy changes (e.g. moving to Redis/PostgreSQL).
+2. **`GateController`**: Owns gate lookup, entry/exit type validation, and passage cycles. Only changes if physical gate hardware protocols change.
+3. **`BillingService`**: Owns invoice calculation and tariff strategy evaluation. Only changes if billing policies change.
+4. **`PaymentService`**: Owns payment adapter execution and transaction audit logging. Only changes if payment orchestration or retry policies change.
+
+`ParkingLot` now retains a single responsibility: **high-level subsystem workflow orchestration**.
+
+---
+
+## 11. Architectural Justification: Event-Driven Domain Architecture (Observer Pattern)
+
+### 11.1 Cross-Cutting Decoupling
+Real-world enterprise parking lots need to trigger external systems upon entry and exit:
+- Updating electronic LED vacancy boards at the entrance.
+- Dispatching SMS/WhatsApp parking slips to drivers.
+- Sending telemetry and occupancy metrics to municipal traffic systems.
+- Invoking reservation or billing ledgers.
+
+Coupling these secondary concerns into the synchronous core parking algorithm violates the **Open/Closed Principle (OCP)** and **Single Responsibility Principle (SRP)**.
+
+### 11.2 Implementation Details
+* **Domain Events**: Clean, immutable records (`VehicleParkedEvent`, `VehicleExitedEvent`) implementing the `ParkingEvent` interface.
+* **Thread-Safe Event Bus**: `ParkingEventPublisher` maintains a thread-safe subscriber list (`CopyOnWriteArrayList<ParkingEventListener>`) and safely isolates core operations from subscriber runtime exceptions.
+* **Zero Overhead**: Listeners can be attached at startup via `ParkingLotBuilder.withEventListener(...)` or dynamically subscribed at runtime via `parkingLot.subscribeToEvents(...)`.

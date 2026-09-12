@@ -3,17 +3,21 @@ package com.parkinglot.billing;
 import com.parkinglot.billing.service.AmenityService;
 import com.parkinglot.enums.BillStatus;
 import com.parkinglot.model.Ticket;
+import com.parkinglot.payment.PaymentStatus;
+import com.parkinglot.payment.PaymentTransaction;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Transactional settlement invoice.
  * Clean, flat data entity designed for database persistence, JSON serialization,
- * and transparent itemized breakdown without recursive Decorator wrapper overhead.
+ * audit trail of payment transactions, and transparent itemized breakdown.
  */
 public class Bill {
     private final String billId;
@@ -22,6 +26,7 @@ public class Bill {
     private final double baseParkingFee;
     private final List<AmenityService> services;
     private final double totalAmount;
+    private final List<PaymentTransaction> paymentHistory;
     private volatile BillStatus status;
 
     public Bill(Ticket ticket, Instant exitTime, double baseParkingFee) {
@@ -33,13 +38,30 @@ public class Bill {
         this.exitTime = Objects.requireNonNull(exitTime, "Exit time cannot be null");
         this.baseParkingFee = baseParkingFee;
         this.services = List.copyOf(ticket.getConsumedServices());
+        this.paymentHistory = new CopyOnWriteArrayList<>();
 
-        // Simple, clean stream summation without recursive decorator nesting
+        // Linear summation of base fee and polymorphic services
         double servicesTotal = this.services.stream()
                 .mapToDouble(AmenityService::calculateCost)
                 .sum();
         this.totalAmount = Math.round((baseParkingFee + servicesTotal) * 100.0) / 100.0;
         this.status = BillStatus.UNPAID;
+    }
+
+    /**
+     * Records a payment attempt in the audit history. If the payment succeeded,
+     * transitions the bill and underlying ticket to PAID.
+     */
+    public synchronized void recordPayment(PaymentTransaction transaction) {
+        Objects.requireNonNull(transaction, "Payment transaction cannot be null");
+        if (this.status == BillStatus.PAID) {
+            throw new IllegalStateException("Bill is already paid: " + billId);
+        }
+        this.paymentHistory.add(transaction);
+        if (transaction.getStatus() == PaymentStatus.SUCCESS) {
+            this.status = BillStatus.PAID;
+            this.ticket.markPaid();
+        }
     }
 
     public synchronized void markPaid() {
@@ -76,6 +98,16 @@ public class Bill {
 
     public BillStatus getStatus() {
         return status;
+    }
+
+    public List<PaymentTransaction> getPaymentHistory() {
+        return Collections.unmodifiableList(paymentHistory);
+    }
+
+    public Optional<PaymentTransaction> getSuccessfulPayment() {
+        return paymentHistory.stream()
+                .filter(t -> t.getStatus() == PaymentStatus.SUCCESS)
+                .findFirst();
     }
 
     public List<String> getItemizedBreakdown() {

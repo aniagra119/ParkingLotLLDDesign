@@ -16,4 +16,11 @@ public enum ParkingSpotType {
     public boolean canAccommodate(VehicleType vehicleType) {
         return compatibleVehicleType.contains(vehicleType);
     }
+
+    public static ParkingSpotType fromVehicleType(VehicleType type) {
+        if (type == null) {
+            throw new IllegalArgumentException("Vehicle type cannot be null");
+        }
+        return valueOf(type.name());
+    }
 }

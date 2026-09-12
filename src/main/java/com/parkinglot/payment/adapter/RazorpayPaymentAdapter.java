@@ -1,12 +1,14 @@
 package com.parkinglot.payment.adapter;
 
+import com.parkinglot.enums.PaymentMode;
 import com.parkinglot.payment.PaymentProcessor;
+import com.parkinglot.payment.PaymentTransaction;
 import com.parkinglot.payment.external.ExternalRazorpayClient;
 import java.util.Objects;
 
 /**
  * Adapter Pattern: Bridges proprietary ExternalRazorpayClient to domain PaymentProcessor.
- * Converts domain currency (Rupees) into vendor unit (Paise).
+ * Converts domain currency (Rupees) into vendor unit (Paise) and records transaction metadata.
  */
 public class RazorpayPaymentAdapter implements PaymentProcessor {
     private final ExternalRazorpayClient razorpayClient;
@@ -16,14 +18,23 @@ public class RazorpayPaymentAdapter implements PaymentProcessor {
     }
 
     @Override
-    public boolean processPayment(String billId, double amountInRupees) {
+    public PaymentTransaction processPayment(String billId, double amountInRupees, PaymentMode mode) {
+        PaymentTransaction txn = new PaymentTransaction(billId, amountInRupees, mode);
         if (amountInRupees <= 0) {
-            return false;
+            txn.markFailed("Amount must be greater than zero");
+            return txn;
         }
+
         // Convert domain Rupees to Razorpay's required unit: Paise
         long amountInPaise = Math.round(amountInRupees * 100);
         String response = razorpayClient.captureTransaction(billId, amountInPaise, "INR");
-        return response != null && response.startsWith("SUCCESS");
+
+        if (response != null && response.startsWith("SUCCESS")) {
+            txn.markSuccess(response);
+        } else {
+            txn.markFailed(response != null ? response : "Unknown gateway failure");
+        }
+        return txn;
     }
 
     public ExternalRazorpayClient getRazorpayClient() {

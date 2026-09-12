@@ -12,33 +12,53 @@ import static org.junit.jupiter.api.Assertions.*;
 class PaymentProcessorTest {
 
     @Test
-    @DisplayName("RazorpayPaymentAdapter should successfully convert Rupees to Paise and process payment")
+    @DisplayName("RazorpayPaymentAdapter should successfully convert Rupees to Paise and record successful transaction")
     void testRazorpayAdapterSuccess() {
         ExternalRazorpayClient client = new ExternalRazorpayClient("key_123", "secret_456");
         RazorpayPaymentAdapter adapter = new RazorpayPaymentAdapter(client);
 
         // ₹180.50 -> 18050 paise
-        boolean result = adapter.processPayment("BILL-001", 180.50);
-        assertTrue(result);
+        PaymentTransaction txn = adapter.processPayment("BILL-001", 180.50, PaymentMode.RAZORPAY_CARD);
+        assertNotNull(txn);
+        assertEquals(PaymentStatus.SUCCESS, txn.getStatus());
+        assertEquals("BILL-001", txn.getBillId());
+        assertEquals(180.50, txn.getAmount());
+        assertEquals(PaymentMode.RAZORPAY_CARD, txn.getPaymentMode());
+        assertNotNull(txn.getTransactionReference());
+        assertTrue(txn.getTransactionReference().startsWith("SUCCESS_TXN_"));
     }
 
     @Test
-    @DisplayName("RazorpayPaymentAdapter should return false for zero or negative amounts")
+    @DisplayName("RazorpayPaymentAdapter should reject zero or negative amounts appropriately")
     void testRazorpayAdapterInvalidAmount() {
         ExternalRazorpayClient client = new ExternalRazorpayClient("key_123", "secret_456");
         RazorpayPaymentAdapter adapter = new RazorpayPaymentAdapter(client);
 
-        assertFalse(adapter.processPayment("BILL-002", 0.0));
-        assertFalse(adapter.processPayment("BILL-003", -50.0));
+        // Zero amount results in FAILED transaction
+        PaymentTransaction txnZero = adapter.processPayment("BILL-002", 0.0, PaymentMode.RAZORPAY_UPI);
+        assertEquals(PaymentStatus.FAILED, txnZero.getStatus());
+        assertEquals("Amount must be greater than zero", txnZero.getFailureReason());
+
+        // Negative amount throws IllegalArgumentException
+        assertThrows(IllegalArgumentException.class, () ->
+                adapter.processPayment("BILL-003", -50.0, PaymentMode.RAZORPAY_UPI)
+        );
     }
 
     @Test
-    @DisplayName("CashPaymentProcessor should accept valid non-negative cash amounts")
+    @DisplayName("CashPaymentProcessor should create successful transaction for non-negative cash amounts")
     void testCashPaymentProcessor() {
         CashPaymentProcessor processor = new CashPaymentProcessor();
-        assertTrue(processor.processPayment("BILL-100", 250.0));
-        assertTrue(processor.processPayment("BILL-101", 0.0));
-        assertFalse(processor.processPayment("BILL-102", -10.0));
+
+        PaymentTransaction txn = processor.processPayment("BILL-100", 250.0, PaymentMode.CASH);
+        assertEquals(PaymentStatus.SUCCESS, txn.getStatus());
+        assertNotNull(txn.getTransactionReference());
+        assertTrue(txn.getTransactionReference().startsWith("CASH-REF-"));
+
+        // Negative cash amount throws IllegalArgumentException
+        assertThrows(IllegalArgumentException.class, () ->
+                processor.processPayment("BILL-101", -10.0, PaymentMode.CASH)
+        );
     }
 
     @Test
