@@ -13,11 +13,11 @@ Design a clean, extensible, multi-floor parking lot system capable of managing h
 2. **Strict 1:1 Spot Compatibility**: A car spot cannot accommodate bikes; a truck spot cannot accommodate cars. Each vehicle maps strictly to its dedicated spot type.
 3. **Automated Ticket Issuance with Operator Auditing**: Generates an entry record (`Ticket`) containing entry timestamp, assigned spot ID, floor number, vehicle plate, ticket number, and operating attendant / automated kiosk (`User issuedBy`).
 4. **Spatial Spot Allocation (Strategy Pattern)**: Nearest available spot across floors (calculated using floor elevation delta first, then 2D Manhattan coordinates) in $O(1)$ lookup time relative to the entry gate.
-5. **Tiered Hourly Fee Math (Template Strategy)**: Progressive fee calculation with hourly ceiling rounding ($\lceil \text{hours} \rceil$) and configurable operational policies (`ParkingConfiguration`).
+5. **Tiered Hourly Fee Math (Template Method Strategy)**: Progressive fee calculation with hourly ceiling rounding ($\lceil \text{hours} \rceil$) and configurable operational policies (`ParkingConfiguration`), sealed via a `final` template method in `SlabBasedFeeStrategy`.
 6. **Itemized Billing (Decorator Pattern)**: Composable itemized invoices (`BillableItem`, `BaseParkingCharge`, `BillableItemDecorator`, `AmenityServiceDecorator`) enabling dynamic runtime decoration of parking fees with EV charging and car wash amenities.
 7. **Hardware Actuation (Command Pattern)**: Gate barriers operated via encapsulated commands (`OpenBarrierCommand`, `CloseBarrierCommand`) with complete operator accountability and audit logging.
 8. **Real-Time Event Bus (Observer Pattern)**: Event-driven notifications (`VehicleParkedEvent`, `VehicleExitedEvent`) decoupled into pluggable listeners (`DisplayBoardListener`, `NotificationListener`).
-9. **Payment Gateway Integration (Hexagonal Adapters)**: Pluggable payment processors (Razorpay adapter, Cash) recording transactional audit trails (`PaymentTransaction`).
+9. **Payment Gateway Integration (Hexagonal Adapters & Registry Pattern)**: Pluggable payment processors (Razorpay adapter, Cash) resolved through a dynamic `PaymentProcessorFactory` registry, recording transactional audit trails (`PaymentTransaction`).
 
 ---
 
@@ -26,13 +26,14 @@ Design a clean, extensible, multi-floor parking lot system capable of managing h
 | Pattern | Category | Where Applied | Concrete Architectural Justification |
 | :--- | :--- | :--- | :--- |
 | **Facade** | Structural | `ParkingLot` class | Hides complex subsystem orchestration (`GateController`, `TicketManager`, `BillingService`, `PaymentService`, `ParkingEventPublisher`) behind clean facade entry points. |
-| **Strategy (x2)** | Behavioral | `ParkingAssignmentStrategy`<br>`FeeCalculationStrategy` | **1.** Swaps spatial search heuristics (Nearest Available Spot vs Random) in $O(1)$.<br>**2.** Swaps mathematical fee algorithms (Progressive Tiered Slabs vs Flat Rate) using `SlabBasedFeeStrategy`. |
+| **Strategy (x2)** | Behavioral | `ParkingAssignmentStrategy`<br>`FeeCalculationStrategy` | **1.** Swaps spatial search heuristics (Nearest Available Spot vs Random) in $O(1)$.<br>**2.** Swaps mathematical fee algorithms (Progressive Tiered Slabs vs Flat Rate). |
 | **Command** | Behavioral | `BarrierCommand`<br>`OpenBarrierCommand`<br>`CloseBarrierCommand` | Encapsulates barrier hardware movements into discrete executable objects, enabling audit logging of every operator/kiosk actuation. |
 | **Decorator** | Structural | `BillableItemDecorator`<br>`AmenityServiceDecorator` | Dynamically decorates `BaseParkingCharge` with value-added amenities (EV charging, car wash) using the Template Method pattern inside the decorator. |
 | **Observer** | Behavioral | `ParkingEventPublisher`<br>`ParkingEventListener` | Decouples core parking workflows from secondary cross-cutting concerns (`DisplayBoardListener` live occupancy, `NotificationListener` driver SMS). |
+| **Template Method** | Behavioral | `SlabBasedFeeStrategy`<br>`BillableItemDecorator` | Seals invariant algorithm skeletons with `final` template methods, delegating primitive mathematical steps (`computeSlabFee`, `getAdditionalCost`) to concrete subclasses. |
 | **Adapter** | Structural | `RazorpayPaymentAdapter` | Converts proprietary third-party SDK calls (`ExternalRazorpayClient`) into our domain `PaymentProcessor` contract (Rupees $\to$ Paise). |
-| **Factory** | Creational | `PaymentProcessorFactory` | Centralizes runtime instantiation of payment adapters based on user's chosen `PaymentMode` enum. |
-| **Builder** | Creational | `ParkingLotBuilder`<br>`Vehicle.Builder` | Constructs complex parking lots and rich vehicle records cleanly without telescoping constructors. |
+| **Registry / Factory** | Creational / Behavioral | `PaymentProcessorFactory` | Maps `PaymentMode` to domain `PaymentProcessor` abstractions using the Registry Pattern, completely decoupled from vendor SDK classes (100% DIP & OCP). |
+| **Builder (x2)** | Creational | `ParkingLotBuilder`<br>`Vehicle.Builder` | Constructs complex parking lots and rich vehicle records cleanly without telescoping constructors. |
 
 ---
 
@@ -48,7 +49,7 @@ To adhere to the **Common Closure Principle (CCP)** and prevent the generic `mod
   * `GateController`: Physical gate access validation and command-driven barrier actuation.
 * **`com.parkinglot.billing`**: Financial settlement domain (`Bill`, `BillingService`, `AmenityService`, `CarWashService`, `EvChargingService`).
   * **`com.parkinglot.billing.decorator`**: Decorator Pattern components (`BillableItem`, `BaseParkingCharge`, `BillableItemDecorator`, `AmenityServiceDecorator`).
-* **`com.parkinglot.payment`**: Payment domain contracts, orchestration (`PaymentService`), transaction entities (`PaymentTransaction`), and factory-selected adapters.
+* **`com.parkinglot.payment`**: Payment domain contracts, orchestration (`PaymentService`), transaction entities (`PaymentTransaction`), and factory registry.
   * **`com.parkinglot.payment.processor`**: Native first-party domain processors (`CashPaymentProcessor`).
   * **`com.parkinglot.payment.adapter`**: Secondary Driven Adapters converting third-party APIs (`RazorpayPaymentAdapter`).
   * **`com.parkinglot.payment.external`**: External third-party vendor SDKs (`ExternalRazorpayClient`).
@@ -141,15 +142,44 @@ To decouple core parking operations from external subsystems:
 
 ---
 
-## 8. Hexagonal Organization of the Payment Bounded Context
+## 8. Hexagonal Organization of the Payment Bounded Context & The Registry Pattern
 
 ### 8.1 Why Processors, Adapters, and External APIs Are Fundamentally Different
 Conflating payment interfaces, adapters, and vendor SDKs violates the Dependency Inversion Principle (DIP):
 1. **The Domain Port (`PaymentProcessor`)**: Represents the domain contract for financial settlement.
 2. **First-Party Domain Processors (`CashPaymentProcessor`)**: Direct implementations for offline cash booth collection.
 3. **Structural Driven Adapters (`RazorpayPaymentAdapter`)**: Bridges third-party SDK calls (`ExternalRazorpayClient`) into domain currency and types.
-4. **External Third-Party SDKs (`ExternalRazorpayClient`)**: Vendor proprietary libraries.
+4. **External Third-Party SDKs (`ExternalRazorpayClient`)**: Vendor proprietary libraries. Encapsulated *only* inside their respective adapter.
 5. **Audit Trails (`PaymentTransaction`)**: Captures every payment attempt on the `Bill` for auditability and dispute resolution.
+
+### 8.2 The Dynamic Registry Pattern in `PaymentProcessorFactory`
+In naive designs, a Factory holds direct concrete references to vendor SDKs (e.g. `ExternalRazorpayClient`), coupling the factory to foreign libraries and forcing constructor modifications whenever a new payment method (Stripe, PayPal) is added.
+
+Instead, we employ the **Registry Pattern** (Fowler PoEAA):
+* **`PaymentProcessorFactory`** acts as a catalog/registry mapping `PaymentMode` to `PaymentProcessor` abstractions:
+  ```java
+  public class PaymentProcessorFactory {
+      private final Map<PaymentMode, PaymentProcessor> registry = new EnumMap<>(PaymentMode.class);
+
+      public PaymentProcessorFactory(Map<PaymentMode, PaymentProcessor> processors) {
+          this.registry.putAll(processors);
+      }
+
+      public void registerProcessor(PaymentMode mode, PaymentProcessor processor) {
+          this.registry.put(mode, processor);
+      }
+
+      public PaymentProcessor getPaymentProcessor(PaymentMode mode) {
+          PaymentProcessor processor = registry.get(mode);
+          if (processor == null) {
+              throw new IllegalArgumentException("No processor registered for: " + mode);
+          }
+          return processor;
+      }
+  }
+  ```
+* **Pure DIP**: The factory has **zero dependencies** on `ExternalRazorpayClient` or any external SDK.
+* **Pure OCP**: New payment methods (e.g. `StripePaymentAdapter`) are registered dynamically at runtime without modifying the factory.
 
 ---
 

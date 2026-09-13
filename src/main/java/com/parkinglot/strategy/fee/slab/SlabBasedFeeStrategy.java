@@ -2,6 +2,7 @@ package com.parkinglot.strategy.fee.slab;
 
 import com.parkinglot.config.ParkingConfiguration;
 import com.parkinglot.enums.VehicleType;
+import com.parkinglot.model.Ticket;
 import com.parkinglot.strategy.fee.FeeCalculationStrategy;
 import java.time.Instant;
 import java.util.Collections;
@@ -11,8 +12,10 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Template / Abstract base strategy for all pricing algorithms that calculate
- * fees based on time slabs and vehicle types.
+ * Template Method Pattern (GoF Behavioral):
+ * Defines the invariant algorithm skeleton for all slab-based pricing strategies.
+ * Subclasses implement the primitive operation {@link #computeSlabFee(long, List)}
+ * to customize the mathematical formula across pricing tiers.
  */
 public abstract class SlabBasedFeeStrategy implements FeeCalculationStrategy {
     protected final Map<VehicleType, List<PricingSlab>> slabsByVehicleType;
@@ -29,8 +32,34 @@ public abstract class SlabBasedFeeStrategy implements FeeCalculationStrategy {
     }
 
     /**
-     * Duration helper: delegates to ParkingConfiguration for grace period and ceiling calculations.
+     * Invariant Template Method:
+     * Enforces parameter validation, billable duration calculation with grace periods
+     * and ceiling round-up, vehicle type slab resolution, and delegates calculation to subclasses.
      */
+    @Override
+    public final double calculateFee(Ticket ticket, Instant exitTime) {
+        Objects.requireNonNull(ticket, "Ticket cannot be null");
+        Objects.requireNonNull(exitTime, "Exit time cannot be null");
+
+        long billableHours = configuration.calculateBillableHours(ticket.getEntryTime(), exitTime);
+        if (billableHours <= 0) {
+            return 0.0;
+        }
+
+        VehicleType vehicleType = ticket.getVehicle().type();
+        List<PricingSlab> slabs = slabsByVehicleType.get(vehicleType);
+        if (slabs == null || slabs.isEmpty()) {
+            throw new IllegalStateException("No pricing slabs configured for vehicle type: " + vehicleType);
+        }
+
+        return computeSlabFee(billableHours, slabs);
+    }
+
+    /**
+     * Primitive hook method: subclasses implement the pricing formula across the resolved slabs.
+     */
+    protected abstract double computeSlabFee(long billableHours, List<PricingSlab> slabs);
+
     protected long calculateBillableHours(Instant entryTime, Instant exitTime) {
         return configuration.calculateBillableHours(entryTime, exitTime);
     }
