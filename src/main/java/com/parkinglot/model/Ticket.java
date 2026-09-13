@@ -15,23 +15,29 @@ public class Ticket {
     private final int floorNumber;
     private final Vehicle vehicle;
     private final Instant entryTime;
+    private final User issuedBy;
     private final List<AmenityService> consumedServices;
     private volatile TicketStatus status;
 
-    public Ticket(String spotId, int floorNumber, Vehicle vehicle, Instant entryTime) {
+    public Ticket(String spotId, int floorNumber, Vehicle vehicle, Instant entryTime, User issuedBy) {
         if (spotId == null || spotId.isBlank()) {
-            throw new IllegalArgumentException("Spot ID cannot be null or empty");
+            throw new IllegalArgumentException("Spot ID cannot be null or blank");
         }
-        Objects.requireNonNull(vehicle, "Vehicle cannot be null");
-        Objects.requireNonNull(entryTime, "Entry time cannot be null");
-
-        this.ticketNumber = UUID.randomUUID().toString();
+        if (floorNumber <= 0) {
+            throw new IllegalArgumentException("Floor number must be positive");
+        }
+        this.ticketNumber = "TCK-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
         this.spotId = spotId;
         this.floorNumber = floorNumber;
-        this.vehicle = vehicle;
-        this.entryTime = entryTime;
+        this.vehicle = Objects.requireNonNull(vehicle, "Vehicle cannot be null");
+        this.entryTime = Objects.requireNonNull(entryTime, "Entry time cannot be null");
+        this.issuedBy = issuedBy != null ? issuedBy : User.SYSTEM_KIOSK;
         this.consumedServices = new CopyOnWriteArrayList<>();
         this.status = TicketStatus.ACTIVE;
+    }
+
+    public Ticket(String spotId, int floorNumber, Vehicle vehicle, Instant entryTime) {
+        this(spotId, floorNumber, vehicle, entryTime, User.SYSTEM_KIOSK);
     }
 
     public void addService(AmenityService service) {
@@ -48,7 +54,7 @@ public class Ticket {
 
     public synchronized void markPaid() {
         if (this.status == TicketStatus.PAID) {
-            throw new IllegalStateException("Ticket is already paid");
+            throw new IllegalStateException("Ticket is already paid: " + ticketNumber);
         }
         this.status = TicketStatus.PAID;
     }
@@ -71,6 +77,10 @@ public class Ticket {
 
     public Instant getEntryTime() {
         return entryTime;
+    }
+
+    public User getIssuedBy() {
+        return issuedBy;
     }
 
     public TicketStatus getStatus() {

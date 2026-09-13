@@ -1,7 +1,10 @@
 package com.parkinglot.service;
 
+import com.parkinglot.command.CloseBarrierCommand;
+import com.parkinglot.command.OpenBarrierCommand;
 import com.parkinglot.enums.GateType;
 import com.parkinglot.model.Gate;
+import com.parkinglot.model.User;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -10,7 +13,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Manages physical gates and enforces entry/exit validation rules.
- * Single Responsibility: Gate lookup, access validation, and passage cycles.
+ * Uses Command Pattern to actuate barriers with full operator audit logging.
  */
 public class GateController {
     private final Map<String, Gate> gates;
@@ -34,12 +37,38 @@ public class GateController {
         return gate;
     }
 
-    public void cycleGate(String gateId) {
+    public void openBarrier(String gateId, User operator) {
         Gate gate = gates.get(gateId);
         if (gate != null) {
-            gate.open();
-            gate.close();
+            new OpenBarrierCommand(gate.getBarrier()).execute(operator);
         }
+    }
+
+    public void closeBarrier(String gateId, User operator) {
+        Gate gate = gates.get(gateId);
+        if (gate != null) {
+            new CloseBarrierCommand(gate.getBarrier()).execute(operator);
+        }
+    }
+
+    public void cycleGate(String gateId, User operator) {
+        Gate gate = gates.get(gateId);
+        if (gate != null) {
+            new OpenBarrierCommand(gate.getBarrier()).execute(operator);
+            new CloseBarrierCommand(gate.getBarrier()).execute(operator);
+        }
+    }
+
+    public void cycleGate(String gateId) {
+        cycleGate(gateId, User.SYSTEM_KIOSK);
+    }
+
+    public void openBarrier(String gateId) {
+        openBarrier(gateId, User.SYSTEM_KIOSK);
+    }
+
+    public void closeBarrier(String gateId) {
+        closeBarrier(gateId, User.SYSTEM_KIOSK);
     }
 
     public Map<String, Gate> getGates() {

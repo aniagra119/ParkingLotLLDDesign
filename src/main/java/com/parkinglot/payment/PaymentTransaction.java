@@ -1,13 +1,15 @@
 package com.parkinglot.payment;
 
 import com.parkinglot.enums.PaymentMode;
+import com.parkinglot.model.User;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 
 /**
  * Domain entity representing an individual payment attempt and audit record.
- * Captures external gateway transaction IDs, timestamps, failure reasons, and status.
+ * Captures external gateway transaction IDs, timestamps, failure reasons, status,
+ * and the operating user/kiosk responsible for processing the payment.
  */
 public class PaymentTransaction {
     private final String paymentId;
@@ -15,11 +17,12 @@ public class PaymentTransaction {
     private final double amount;
     private final PaymentMode paymentMode;
     private final Instant attemptedAt;
+    private final User processedBy;
     private volatile PaymentStatus status;
     private volatile String transactionReference;
     private volatile String failureReason;
 
-    public PaymentTransaction(String billId, double amount, PaymentMode paymentMode) {
+    public PaymentTransaction(String billId, double amount, PaymentMode paymentMode, User processedBy) {
         if (amount < 0) {
             throw new IllegalArgumentException("Payment amount cannot be negative");
         }
@@ -27,8 +30,13 @@ public class PaymentTransaction {
         this.billId = Objects.requireNonNull(billId, "Bill ID cannot be null");
         this.amount = amount;
         this.paymentMode = Objects.requireNonNull(paymentMode, "Payment mode cannot be null");
+        this.processedBy = processedBy != null ? processedBy : User.SYSTEM_KIOSK;
         this.attemptedAt = Instant.now();
         this.status = PaymentStatus.PENDING;
+    }
+
+    public PaymentTransaction(String billId, double amount, PaymentMode paymentMode) {
+        this(billId, amount, paymentMode, User.SYSTEM_KIOSK);
     }
 
     public synchronized void markSuccess(String transactionReference) {
@@ -59,6 +67,10 @@ public class PaymentTransaction {
 
     public Instant getAttemptedAt() {
         return attemptedAt;
+    }
+
+    public User getProcessedBy() {
+        return processedBy;
     }
 
     public PaymentStatus getStatus() {
