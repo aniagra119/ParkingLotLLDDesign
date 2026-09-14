@@ -682,3 +682,173 @@ class ParkingLot {
 // 10. Strict Spot Type Compatibility:
 //    - ParkingSpotType (CAR, BIKE, TRUCK) strictly maps 1:1 to VehicleType. canAccommodate() guarantees
 //      that a CAR spot cannot be assigned to BIKEs, and a BIKE spot cannot host TRUCKs.
+
+
+// ============================================================================
+// RELATIONAL DATABASE SCHEMA (SQL DDL & REFERENTIAL INTEGRITY)
+// ============================================================================
+/*
+-- -----------------------------------------------------------------------------
+-- 1. PARKING LOT & INFRASTRUCTURE TABLES
+-- -----------------------------------------------------------------------------
+CREATE TABLE parking_lots (
+    parking_lot_id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    address VARCHAR(255) NOT NULL,
+    total_floors INT NOT NULL DEFAULT 1,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE parking_floors (
+    floor_id VARCHAR(64) PRIMARY KEY,
+    parking_lot_id VARCHAR(64) NOT NULL REFERENCES parking_lots(parking_lot_id) ON DELETE CASCADE,
+    floor_number INT NOT NULL,
+    capacity INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_floor_per_lot UNIQUE (parking_lot_id, floor_number)
+);
+
+CREATE TABLE parking_spots (
+    spot_id VARCHAR(64) PRIMARY KEY,
+    floor_id VARCHAR(64) NOT NULL REFERENCES parking_floors(floor_id) ON DELETE CASCADE,
+    spot_number VARCHAR(32) NOT NULL,
+    spot_type VARCHAR(32) NOT NULL CHECK (spot_type IN ('CAR', 'BIKE', 'TRUCK')),
+    status VARCHAR(32) NOT NULL DEFAULT 'AVAILABLE' CHECK (status IN ('AVAILABLE', 'OCCUPIED', 'OUT_OF_SERVICE')),
+    coordinate_x DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    coordinate_y DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_spot_per_floor UNIQUE (floor_id, spot_number)
+);
+
+CREATE INDEX idx_parking_spots_status_type ON parking_spots(floor_id, spot_type, status);
+
+-- -----------------------------------------------------------------------------
+-- 2. USERS, OPERATORS & GATES
+-- -----------------------------------------------------------------------------
+CREATE TABLE users (
+    user_id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    email VARCHAR(128) NOT NULL UNIQUE,
+    phone_number VARCHAR(32) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE operators (
+    operator_id VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL UNIQUE REFERENCES users(user_id) ON DELETE RESTRICT,
+    employee_id VARCHAR(64) NOT NULL UNIQUE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE gates (
+    gate_id VARCHAR(64) PRIMARY KEY,
+    parking_lot_id VARCHAR(64) NOT NULL REFERENCES parking_lots(parking_lot_id) ON DELETE CASCADE,
+    gate_name VARCHAR(64) NOT NULL,
+    gate_type VARCHAR(16) NOT NULL CHECK (gate_type IN ('ENTRY', 'EXIT')),
+    coordinate_x DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    coordinate_y DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    barrier_status VARCHAR(16) NOT NULL DEFAULT 'LOWERED' CHECK (barrier_status IN ('RAISED', 'LOWERED')),
+    current_operator_id VARCHAR(64) REFERENCES operators(operator_id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE barrier_executions (
+    execution_id VARCHAR(64) PRIMARY KEY,
+    gate_id VARCHAR(64) NOT NULL REFERENCES gates(gate_id) ON DELETE CASCADE,
+    operator_id VARCHAR(64) NOT NULL REFERENCES operators(operator_id) ON DELETE RESTRICT,
+    command_action VARCHAR(32) NOT NULL CHECK (command_action IN ('OPEN', 'CLOSE')),
+    executed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_successful BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE INDEX idx_barrier_executions_gate ON barrier_executions(gate_id, executed_at DESC);
+
+-- -----------------------------------------------------------------------------
+-- 3. VEHICLES, SESSIONS, TICKETS & BILLING
+-- -----------------------------------------------------------------------------
+CREATE TABLE vehicles (
+    vehicle_id VARCHAR(64) PRIMARY KEY,
+    registration_number VARCHAR(32) NOT NULL UNIQUE,
+    vehicle_type VARCHAR(32) NOT NULL CHECK (vehicle_type IN ('CAR', 'BIKE', 'TRUCK')),
+    color VARCHAR(32),
+    model VARCHAR(64),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE tickets (
+    ticket_id VARCHAR(64) PRIMARY KEY,
+    ticket_number VARCHAR(64) NOT NULL UNIQUE,
+    vehicle_id VARCHAR(64) NOT NULL REFERENCES vehicles(vehicle_id) ON DELETE RESTRICT,
+    parking_spot_id VARCHAR(64) NOT NULL REFERENCES parking_spots(spot_id) ON DELETE RESTRICT,
+    entry_gate_id VARCHAR(64) NOT NULL REFERENCES gates(gate_id) ON DELETE RESTRICT,
+    entry_operator_id VARCHAR(64) NOT NULL REFERENCES operators(operator_id) ON DELETE RESTRICT,
+    status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'PAID', 'CANCELLED')),
+    entry_time TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_tickets_vehicle_active ON tickets(vehicle_id, status);
+CREATE INDEX idx_tickets_spot_active ON tickets(parking_spot_id, status);
+
+CREATE TABLE bills (
+    bill_id VARCHAR(64) PRIMARY KEY,
+    bill_number VARCHAR(64) NOT NULL UNIQUE,
+    ticket_id VARCHAR(64) NOT NULL UNIQUE REFERENCES tickets(ticket_id) ON DELETE RESTRICT,
+    exit_gate_id VARCHAR(64) NOT NULL REFERENCES gates(gate_id) ON DELETE RESTRICT,
+    exit_operator_id VARCHAR(64) NOT NULL REFERENCES operators(operator_id) ON DELETE RESTRICT,
+    base_parking_charge NUMERIC(10, 2) NOT NULL,
+    total_amount NUMERIC(10, 2) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'UNPAID' CHECK (status IN ('UNPAID', 'PAID')),
+    exit_time TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE bill_amenities (
+    amenity_item_id VARCHAR(64) PRIMARY KEY,
+    bill_id VARCHAR(64) NOT NULL REFERENCES bills(bill_id) ON DELETE CASCADE,
+    amenity_type VARCHAR(64) NOT NULL CHECK (amenity_type IN ('EV_CHARGING', 'CAR_WASH', 'DETAILING')),
+    charge_amount NUMERIC(10, 2) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE payment_transactions (
+    transaction_id VARCHAR(64) PRIMARY KEY,
+    bill_id VARCHAR(64) NOT NULL REFERENCES bills(bill_id) ON DELETE RESTRICT,
+    transaction_reference VARCHAR(128) NOT NULL UNIQUE,
+    amount NUMERIC(10, 2) NOT NULL,
+    payment_mode VARCHAR(32) NOT NULL CHECK (payment_mode IN ('RAZORPAY_UPI', 'RAZORPAY_CARD', 'RAZORPAY_NETBANKING', 'CASH')),
+    payment_status VARCHAR(32) NOT NULL CHECK (payment_status IN ('SUCCESS', 'FAILED', 'PENDING')),
+    processed_by_operator_id VARCHAR(64) REFERENCES operators(operator_id) ON DELETE SET NULL,
+    gateway_payment_id VARCHAR(128),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_payment_transactions_bill ON payment_transactions(bill_id, payment_status);
+
+-- -----------------------------------------------------------------------------
+-- 4. FUTURE SCOPE SCALABILITY & NON-DISRUPTIVE EXTENSIONS
+-- -----------------------------------------------------------------------------
+-- Example A: Seamless addition of EV Charging Infrastructure without disrupting spots table
+CREATE TABLE ev_charging_stations (
+    station_id VARCHAR(64) PRIMARY KEY,
+    parking_spot_id VARCHAR(64) NOT NULL UNIQUE REFERENCES parking_spots(spot_id) ON DELETE CASCADE,
+    charger_type VARCHAR(32) NOT NULL CHECK (charger_type IN ('CCS2', 'TYPE_2', 'CHADEMO')),
+    max_kw_output NUMERIC(6, 2) NOT NULL DEFAULT 22.0,
+    rate_per_kwh NUMERIC(8, 2) NOT NULL,
+    is_operational BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Example B: Dynamic Surge / Congestion Pricing Config without breaking pricing models
+CREATE TABLE surge_pricing_rules (
+    rule_id VARCHAR(64) PRIMARY KEY,
+    parking_lot_id VARCHAR(64) NOT NULL REFERENCES parking_lots(parking_lot_id) ON DELETE CASCADE,
+    occupancy_threshold_percentage NUMERIC(5, 2) NOT NULL,
+    surge_multiplier NUMERIC(4, 2) NOT NULL DEFAULT 1.25,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    start_time TIME NOT NULL,
+    end_time TIME NOT NULL
+);
+*/
