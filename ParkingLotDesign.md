@@ -1,132 +1,135 @@
-# Multi-Floor Parking Lot System — Architectural Blueprint & System Requirements
+# Parking Lot System — Architectural Decisions & Revision Guide
 
-A production-grade, object-oriented Low-Level Design (LLD) specification for an automated Multi-Floor Parking Lot system with multi-vehicle support, dynamic spot allocation, tiered fee calculation, and payment gateway integration in Java 21 adhering to SOLID and GoF design patterns.
-
----
-
-## 1. System Requirements Matrix
-
-| # | Requirement | Implementation Details | Architectural Pattern / Component |
-| :---: | :--- | :--- | :--- |
-| **1** | **Multi-Floor Structure** | Multi-level facility with floors containing categorized parking spots. | `ParkingLot`, `ParkingFloor` |
-| **2** | **Vehicle & Spot Segregation** | Strict sizing: `BIKE` $\to$ Bike Spot, `CAR` $\to$ Car Spot, `TRUCK` $\to$ Large/Truck Spot. Cross-parking strictly rejected. | `Vehicle`, `VehicleType`, `ParkingSpot`, `SpotType` |
-| **3** | **Multiple Entry & Exit Gates** | Concurrent entry gates with human/automated operators generating tickets; exit gates processing billing. | `Gate`, `EntryGate`, `ExitGate`, `Operator` |
-| **4** | **Pluggable Spot Assignment** | Strategy to allocate spots (e.g., nearest available spot to entry gate). Swappable without modifying core lot logic. | `ParkingAssignmentStrategy`, `NearestSpotAssignmentStrategy` (Strategy Pattern) |
-| **5** | **Ticket Generation** | Unique ticket emitted at entry capturing `ticketId`, `entryTime`, `vehicle`, and `assignedSpot`. | `Ticket` (Value Object / Aggregate Record) |
-| **6** | **Tiered Fee Calculation** | Progressive hourly slab pricing per vehicle type with partial-hour ceiling round-up. Extensible to dynamic/flat rates. | `FeeCalculationStrategy`, `TieredHourlyFeeStrategy` (Strategy Pattern) |
-| **7** | **Payment Gateway Integration** | External integration with Razorpay to process UPI/Card payments without vendor lock-in. | `PaymentProcessor`, `RazorpayPaymentAdapter` (Adapter Pattern) |
-| **8** | **Thread Safety & Double-Booking Guard** | Prevent race conditions when two entry gates attempt to assign the same optimal spot concurrently. | `ReentrantLock` / Atomic spot reservation (`ParkingSpot.park()`) |
-| **9** | **System Construction & Assembly** | Fluent setup of floors, spots, gates, and operators with default configurations. | `ParkingLotBuilder` (Builder Pattern), `ParkingLot` (Facade Pattern) |
+This document captures the architectural trade-offs, design patterns, and engineering decisions established during the design of this multi-floor parking lot system. Use this as a reference for interview prep and system design revision.
 
 ---
 
-## 2. High-Level Architecture
+## 1. Architectural Decisions & Trade-Off Matrix
 
-```mermaid
-graph TD
-    Client([Driver / Entry Kiosk]) -->|Drives up to| EG[EntryGate]
-    Client -->|Drives out through| XG[ExitGate]
-    
-    subgraph Gate & Orchestration Layer
-        EG -->|Uses Operator / Automated| OP[Operator]
-        EG -->|Requests spot allocation| PAS[ParkingAssignmentStrategy - Strategy Pattern]
-        EG -->|Emits| T[Ticket]
-        XG -->|Calculates bill via| FCS[FeeCalculationStrategy - Strategy Pattern]
-        XG -->|Processes payment via| PP[PaymentProcessor - Adapter Pattern]
-        PP --> RZ[RazorpayPaymentAdapter]
-    end
+### Decision 1: The Facade Pattern vs. The "Train Wreck" Anti-Pattern (Law of Demeter)
 
-    subgraph Core Domain Layer
-        PL[ParkingLot - Facade Aggregate Root]
-        PL -->|Has N Floors| PF[ParkingFloor]
-        PF -->|Has N Spots| PS[ParkingSpot Hierarchy]
-        PS --> BS[BikeSpot]
-        PS --> CS[CarSpot]
-        PS --> TS[TruckSpot]
-        PS -->|Occupied by| V[Vehicle]
-        V --> Bike[Bike]
-        V --> Car[Car]
-        V --> Truck[Truck]
-    end
-
-    subgraph Billing & Accounting Layer
-        XG -->|Generates| B[Bill / Invoice]
-        B -->|Paid via| PAY[Payment Transaction]
-        PAY -->|Status| PSTAT[PaymentStatus: SUCCESS, FAILED, PENDING]
-    end
-
-    PAS -->|Queries available spots| PF
-    FCS -->|Inspects duration & VehicleType| T
+#### The Tempting Anti-Pattern:
+```java
+// Leaking internal manager chains to the outside world
+entryGate.getParkingLot().getTicketManager().createTicket(
+    entryGate.getParkingLot().getAllotmentManager().findSpot(...)
+);
 ```
 
----
+#### Why this breaks down:
+1. **Law of Demeter Violation**: *"A method should only call methods on its immediate dependencies, not reach through a chain of accessors."*
+2. **Leaked Orchestration Logic**: To check in a car, you must query an allotment strategy, reserve the spot, mark it occupied, and generate a ticket. If `EntryGate` coordinates these steps, the business workflow leaks into the UI/hardware layer.
+3. **Fragile Coupling**: If the ticket generation signature or spot reservation contract changes, every gate class breaks.
 
-## 3. Tiered Fee Calculation Model
-
-The problem specifies **progressive slab pricing** with ceiling rounding:
-
-$$\text{Billable Hours} = \lceil \text{Duration in Hours} \rceil$$
-
-### Hourly Rate Slabs by Vehicle Type (₹ / hour)
-
-| Vehicle Type | Hours 0 – 2 | Hours 2 – 4 | Hours 4 – 6 | Hours 6+ |
-| :--- | :---: | :---: | :---: | :---: |
-| **BIKE** | ₹20 | ₹25 | ₹30 | ₹40 |
-| **CAR** | ₹25 | ₹30 | ₹35 | ₹45 |
-| **TRUCK** | ₹50 | ₹60 | ₹65 | ₹80 |
-
-#### Example Walkthrough (Car parked for 5.5 hours):
-1. **Ceiling Rounding**: $5.5\text{ hrs} \to 6\text{ billable hours}$.
-2. **Slab 1 (Hours 0–2, 2 hrs)**: $2 \times ₹25 = ₹50$.
-3. **Slab 2 (Hours 2–4, 2 hrs)**: $2 \times ₹30 = ₹60$.
-4. **Slab 3 (Hours 4–6, 2 hrs)**: $2 \times ₹35 = ₹70$.
-5. **Total Final Bill**: $₹50 + ₹60 + ₹70 = \mathbf{₹180}$.
+#### The Architectural Solution: `ParkingLot` as a Facade
+```java
+// EntryGate only talks to its direct friend:
+public Ticket processEntry(Vehicle vehicle) {
+    return parkingLot.parkVehicle(this.gateId, vehicle);
+}
+```
+Inside `ParkingLot.parkVehicle(...)`, the lot acts as a **Domain Service / Facade**, orchestrating internal spot lookup, state transitions, and ticket emission. The gate stays completely decoupled.
 
 ---
 
-## 4. Key Design Patterns & Architectural Decisions
+### Decision 2: Gate Modeling — Compile-Time Safety vs. Dynamic Lane Reconfiguration
 
-### 1. Strategy Pattern for Spot Assignment (`ParkingAssignmentStrategy`)
-* **Problem**: Different parking lots prioritize different allocation algorithms (e.g., nearest to entry gate, ground floor first, distributed balance across floors, or VIP proximity).
-* **Solution**: `EntryGate` delegates to `ParkingAssignmentStrategy.findSpot(ParkingLot, EntryGate, VehicleType)`.
-* **Open/Closed Principle**: We can introduce `EcoElectricSpotStrategy` or `VIPSpotStrategy` without touching `EntryGate` or `ParkingLot`.
+#### The Trade-Off:
+In real life, parking lots have different lane configurations:
+* **Scenario A (Fixed Physical Infrastructure)**: Gates have one-way spike strips, barrier arms, and ticket dispensers mounted specifically for incoming or outgoing cars.
+* **Scenario B (Dynamic Reversible Lanes)**: At 9:00 AM (morning rush), Lane 3 is configured for ENTRY. At 5:00 PM (evening rush), an operator flips a switch, and Lane 3 dynamically operates as an EXIT lane.
 
-### 2. Strategy Pattern for Fee Calculation (`FeeCalculationStrategy`)
-* **Problem**: Pricing schemes change frequently (e.g., dynamic weekend surge, flat event-day rates, subscription passes).
-* **Solution**: `ExitGate` delegates to `FeeCalculationStrategy.calculateFee(Ticket, LocalDateTime exitTime)`.
+#### Three Ways to Model This:
 
-### 3. Adapter Pattern for Payment Processing (`PaymentProcessor`)
-* **Problem**: Integrating directly with 3rd-party vendor SDKs (`RazorpayClient`) tightly couples domain logic to proprietary APIs.
-* **Solution**: Define a domain interface `PaymentProcessor` (`processPayment(PaymentRequest)`). Build `RazorpayPaymentAdapter` to translate domain calls into Razorpay SDK payloads. If switching to Stripe or Paytm later, only a new adapter is created.
+| Approach | Pattern | Pros | Cons |
+| :--- | :--- | :--- | :--- |
+| **1. Dedicated Subclasses** (`EntryGate`, `ExitGate`) | Clean Inheritance | **Compile-time type safety**. The compiler physically prevents calling `exitGate.processEntry(car)`. | Cannot dynamically transform a gate from entry to exit at runtime. |
+| **2. Capability Interfaces** (`EntryCapable`, `ExitCapable`) | Interface Segregation (ISP) | Compile-time safety + supports a `BidirectionalGate` implementing both interfaces. | Static; cannot switch lane mode at runtime without object recreation. |
+| **3. Mode / State Pattern** (`Gate` with `GateModeState`) | GoF State Pattern | **100% dynamic runtime lane flipping** without recompilation or redeployment. | Requires runtime exception guards when a lane mode is inactive. |
 
-### 4. Concurrency & Race-Condition Defense
-* **Problem**: Multiple entry gates simultaneously query for the nearest spot and attempt to assign the same `CarSpot-101` to two different vehicles.
-* **Solution**: Thread-safe reservation using lock guards or atomic compare-and-set:
-  ```java
-  public synchronized boolean assignVehicle(Vehicle vehicle) {
-      if (!isAvailable) return false;
-      this.currentVehicle = vehicle;
-      this.isAvailable = false;
-      return true;
-  }
-  ```
+* **Project Consensus**: For standard interview specifications with dedicated gates, dedicated classes (`EntryGate`, `ExitGate`) provide maximum compile-time safety and zero runtime exceptions.
 
 ---
 
-## 5. Domain Decomposition & Class Contracts
+### Decision 3: Spatial Decomposition — YAGNI on `Space` vs. `Floor` & Zoning
 
-### Primitives & Enums
-* `VehicleType`: `BIKE`, `CAR`, `TRUCK`.
-* `ParkingSpotType`: `BIKE_SPOT`, `CAR_SPOT`, `TRUCK_SPOT`.
-* `TicketStatus`: `ACTIVE`, `PAID`, `LOST`.
-* `PaymentStatus`: `PENDING`, `COMPLETED`, `FAILED`, `REFUNDED`.
-* `PaymentMode`: `UPI`, `CREDIT_CARD`, `DEBIT_CARD`, `CASH`.
+#### The Over-Abstraction Trap:
+Introducing a generic `Space` class (`Space has-a Optional<Floor>, SpaceType, List<ParkingSpot>`) before needed violates **YAGNI (You Aren't Gonna Need It)**.
 
-### Core Entities
-* **`Vehicle`** (Abstract base: `Bike`, `Car`, `Truck`).
-* **`ParkingSpot`** (`spotId`, `floorNumber`, `type`, `isAvailable`, `currentVehicle`).
-* **`ParkingFloor`** (`floorNumber`, `spotsByType`, `availableCountByType`).
-* **`Ticket`** (`ticketId`, `vehicleNumber`, `vehicleType`, `assignedSpot`, `entryTime`, `entryGateId`).
-* **`Bill`** (`billId`, `ticket`, `exitTime`, `durationHours`, `totalAmount`, `billStatus`).
-* **`EntryGate`** / **`ExitGate`** (`gateId`, `operator`, gate operations).
-* **`ParkingLot`** (Aggregate root coordinating floors, gates, and strategies).
+#### The Clean Solution:
+* The building has `ParkingFloor`s containing `ParkingSpot`s.
+* Real-world **Zoning** (e.g., *Floor 1 - North Wing (close to mall)* vs. *Floor 1 - South Wing (far)*) does **not** require extra entity wrappers.
+* Instead, **spatial coordinates** (floor number, slot index, distance from gate) are attributes on the `ParkingSpot`.
+* The **`ParkingAssignmentStrategy`** uses those coordinates to decide allocation (e.g., filling near spots during low traffic, or filling far spots during peak rush).
+
+---
+
+### Decision 4: Lifecycle Separation — `Ticket` (Entry) vs. `Bill` (Exit)
+
+#### The Nullable Fields Anti-Pattern:
+Combining entry and exit data into a single `Ticket` class:
+```java
+class Ticket {
+    LocalDateTime entryTime;
+    LocalDateTime exitTime;    // NULL at entry!
+    Bill bill;                 // NULL at entry!
+    Payment payment;           // NULL at entry!
+}
+```
+Having core domain entities filled with null fields that only get populated hours later is a major domain modeling code smell.
+
+#### The Clean Domain Boundary:
+1. **`Ticket` (The Entry Fact)**:
+   - Created at check-in.
+   - Encapsulates: `ticketId`, `vehicleNumber`, `vehicleType`, `assignedSpot`, `entryTime`, `entryGateId`, `TicketStatus (ACTIVE, COMPLETED)`.
+   - Immutable once issued.
+2. **`Bill` / `Invoice` (The Exit Settlement)**:
+   - Created at check-out.
+   - Encapsulates: `billId`, `ticketReference`, `exitTime`, `durationHours`, `totalAmount`, `BillStatus (UNPAID, PAID)`.
+3. **`Payment` (The Financial Transaction)**:
+   - Emitted upon gateway execution.
+   - Encapsulates: `transactionId`, `amount`, `paymentMode (UPI, CARD, CASH)`, `paymentStatus (SUCCESS, FAILED)`.
+
+---
+
+### Decision 5: Pluggable Strategies (Open/Closed Principle)
+
+The requirements explicitly mandate that both **spot assignment** and **fee calculation** may change in the future.
+
+#### 1. `ParkingAssignmentStrategy` (Strategy Pattern)
+```java
+public interface ParkingAssignmentStrategy {
+    ParkingSpot findSpot(ParkingLot lot, Gate entryGate, VehicleType vehicleType);
+}
+```
+* **`NearestAvailableSpotStrategy`**: Evaluates available spots by computing spatial distance:
+  $$\text{Distance} = (\text{FloorDifference} \times \text{Weight}) + \text{SlotOffset}$$
+* Extensibility: Adding `EcoVehicleSpotStrategy` or `VIPSpotStrategy` requires zero modifications to existing lot code.
+
+#### 2. `FeeCalculationStrategy` (Strategy Pattern)
+```java
+public interface FeeCalculationStrategy {
+    double calculateFee(Ticket ticket, LocalDateTime exitTime);
+}
+```
+* **`TieredHourlyFeeStrategy`**: Implements the progressive slab pricing model with ceiling hour calculation:
+  $$\text{Billable Hours} = \lceil \text{Duration in Hours} \rceil$$
+* Extensibility: Adding weekend surge rates, flat-rate event passes, or free 15-minute grace periods is isolated into separate strategy implementations.
+
+---
+
+### Decision 6: Payment Gateway Integration (Adapter Pattern)
+
+#### The Problem: Vendor Lock-In
+Importing third-party SDKs directly (`import com.razorpay.RazorpayClient;`) into domain services welds your business code to external API schemas.
+
+#### The Solution: The Adapter Pattern
+```
+[ExitGate / Billing] ---> (PaymentProcessor Interface)
+                                    ▲
+                                    │ implements
+                         [RazorpayPaymentAdapter]
+                                    │ wraps
+                         [External RazorpayClient SDK]
+```
+If the business decides to switch to Stripe, Paytm, or Cash on Delivery, only a new adapter class is added without altering any billing domain logic.
