@@ -1,129 +1,92 @@
-# Parking Lot System — Architectural Decisions & Revision Guide
-
-This document captures the architectural trade-offs, design patterns, and engineering decisions established during the design of this multi-floor parking lot system. Use this as a reference for interview prep and system design revision.
-
----
-
-## 1. Architectural Decisions & Trade-Off Matrix
-
-### Decision 1: The Facade Pattern vs. The "Train Wreck" Anti-Pattern (Law of Demeter)
-
-#### The Tempting Anti-Pattern:
-```java
-// Leaking internal manager chains to the outside world
-entryGate.getParkingLot().getTicketManager().createTicket(
-    entryGate.getParkingLot().getAllotmentManager().findSpot(...)
-);
-```
-
-#### Why this breaks down:
-1. **Law of Demeter Violation**: *"A method should only call methods on its immediate dependencies, not reach through a chain of accessors."*
-2. **Leaked Orchestration Logic**: To check in a car, you must query an allotment strategy, reserve the spot, mark it occupied, and generate a ticket. If `EntryGate` coordinates these steps, the business workflow leaks into the UI/hardware layer.
-3. **Fragile Coupling**: If the ticket generation signature or spot reservation contract changes, every gate class breaks.
-
-#### The Architectural Solution: `ParkingLot` as a Facade
-```java
-// EntryGate only talks to its direct friend:
-public Ticket processEntry(Vehicle vehicle) {
-    return parkingLot.parkVehicle(this.gateId, vehicle);
-}
-```
-Inside `ParkingLot.parkVehicle(...)`, the lot acts as a **Domain Service / Facade**, orchestrating internal spot lookup, state transitions, and ticket emission. The gate stays completely decoupled.
+# Comprehensive Architectural Design & Decision Log
+## Multi-Floor Parking Lot Low-Level Design (LLD)
 
 ---
 
-### Decision 2: Gate Modeling — Compile-Time Safety vs. Dynamic Lane Reconfiguration
+## 1. System Requirements & Domain Scope
 
-#### The Trade-Off:
-In real life, parking lots have different lane configurations:
-* **Scenario A (Fixed Physical Infrastructure)**: Gates have one-way spike strips, barrier arms, and ticket dispensers mounted specifically for incoming or outgoing cars.
-* **Scenario B (Dynamic Reversible Lanes)**: At 9:00 AM (morning rush), Lane 3 is configured for ENTRY. At 5:00 PM (evening rush), an operator flips a switch, and Lane 3 dynamically operates as an EXIT lane.
+### 1.1 Problem Statement
+Design a clean, extensible, multi-floor parking lot system capable of managing high-throughput entry and exit flows, dynamically assigning parking spots based on vehicle dimensions, maintaining transactional bill settlement, calculating tiered hourly fees, and supporting seamless third-party payment integration (e.g. Razorpay).
 
-#### Three Ways to Model This:
+### 1.2 Core Capabilities
+1. **Multi-Floor Capacity**: Multi-level floors, each containing designated spot types (`BIKE`, `CAR`, `TRUCK`).
+2. **Strict 1:1 Spot Compatibility**: A car spot cannot accommodate bikes; a truck spot cannot accommodate cars. Each vehicle maps strictly to its dedicated spot type.
+3. **Automated Ticket Issuance**: Generates an immutable entry record (`Ticket`) containing entry timestamp, assigned spot ID, vehicle plate, and ticket number.
+4. **Spot Allocation Algorithm**: Nearest available spot across floors (calculated using floor levels and spot offsets) in $O(1)$ lookup time.
+5. **Tiered Hourly Fee Math**: Progressive fee calculation with hourly ceiling rounding ($\lceil \text{hours} \rceil$).
+6. **Payment & Barrier Decoupling**: Pluggable payment processors (Razorpay adapter) and physical boom barrier actuator isolation.
 
-| Approach | Pattern | Pros | Cons |
+---
+
+## 2. Design Patterns Applied & Rationale
+
+| Pattern | Category | Where Applied | Concrete Architectural Justification |
 | :--- | :--- | :--- | :--- |
-| **1. Dedicated Subclasses** (`EntryGate`, `ExitGate`) | Clean Inheritance | **Compile-time type safety**. The compiler physically prevents calling `exitGate.processEntry(car)`. | Cannot dynamically transform a gate from entry to exit at runtime. |
-| **2. Capability Interfaces** (`EntryCapable`, `ExitCapable`) | Interface Segregation (ISP) | Compile-time safety + supports a `BidirectionalGate` implementing both interfaces. | Static; cannot switch lane mode at runtime without object recreation. |
-| **3. Mode / State Pattern** (`Gate` with `GateModeState`) | GoF State Pattern | **100% dynamic runtime lane flipping** without recompilation or redeployment. | Requires runtime exception guards when a lane mode is inactive. |
-
-* **Project Consensus**: For standard interview specifications with dedicated gates, dedicated classes (`EntryGate`, `ExitGate`) provide maximum compile-time safety and zero runtime exceptions.
-
----
-
-### Decision 3: Spatial Decomposition — YAGNI on `Space` vs. `Floor` & Zoning
-
-#### The Over-Abstraction Trap:
-Introducing a generic `Space` class (`Space has-a Optional<Floor>, SpaceType, List<ParkingSpot>`) before needed violates **YAGNI (You Aren't Gonna Need It)**.
-
-#### The Clean Solution:
-* The building has `ParkingFloor`s containing `ParkingSpot`s.
-* Real-world **Zoning** (e.g., *Floor 1 - North Wing (close to mall)* vs. *Floor 1 - South Wing (far)*) does **not** require extra entity wrappers.
-* Instead, **spatial coordinates** (floor number, slot index, distance from gate) are attributes on the `ParkingSpot`.
-* The **`ParkingAssignmentStrategy`** uses those coordinates to decide allocation (e.g., filling near spots during low traffic, or filling far spots during peak rush).
+| **Facade** | Structural | `ParkingLot` class | Hides complex subsystem orchestration (`TicketManager`, `ParkingFloorManager`, `GateManager`) from external clients, preventing Law of Demeter violations. |
+| **State** | Behavioral | `GateModeState` on `Gate` | Models dynamic lane flipping (`EntryModeState`, `ExitModeState`, `MaintenanceModeState`) to handle peak traffic reversals without server reboots or flag spaghetti. |
+| **Command** | Behavioral | `BarrierCommand` (`OpenBarrier`, `CloseBarrier`) | Decouples gate business logic from physical barrier hardware/actuators. Also decouples multiple hardware invokers (ANPR camera, FASTag reader, guard UI) from ticket issuance. |
+| **Strategy** | Behavioral | `ParkingAssignmentStrategy` | Encapsulates spot allocation logic (`NearestAvailableSpotStrategy`, `RandomSpotStrategy`) to allow swapping search heuristics without touching floor models. |
+| **Strategy** | Behavioral | `FeeCalculationStrategy` | Encapsulates progressive tiered slab mathematics (`TieredHourlyFeeStrategy`, `FlatRateStrategy`, `WeekendSurgeStrategy`). |
+| **Decorator** | Structural | `BillableItemDecorator` on `BaseParkingCharge` | Dynamically wraps parking fees with optional customer amenities (`EvChargingDecorator`, `CarWashDecorator`) avoiding an exponential $2^N$ subclass explosion. |
+| **Adapter** | Structural | `RazorpayPaymentAdapter` | Converts proprietary third-party SDK calls (`RazorpayClient`) into our clean domain `PaymentProcessor` contract. |
+| **Factory** | Creational | `PaymentProcessorFactory` | Centralizes runtime instantiation of payment adapters based on user's chosen `PaymentMode` enum. |
+| **Builder** | Creational | `ParkingLotBuilder` | Constructs complex multi-floor, multi-gate parking lot hierarchies cleanly without telescoping constructors. |
 
 ---
 
-### Decision 4: Lifecycle Separation — `Ticket` (Entry) vs. `Bill` (Exit)
+## 3. The Great Pattern Debate: Strategy vs. Adapter + Factory (The Common Misconception)
 
-#### The Nullable Fields Anti-Pattern:
-Combining entry and exit data into a single `Ticket` class:
+### 3.1 The Widespread Interview & Tutorial Mislabeling
+In 90% of online tutorials, YouTube videos, and mock LLD interviews, you will see payment integration labeled as the **"Strategy Pattern"**:
 ```java
-class Ticket {
-    LocalDateTime entryTime;
-    LocalDateTime exitTime;    // NULL at entry!
-    Bill bill;                 // NULL at entry!
-    Payment payment;           // NULL at entry!
+// What the internet commonly mislabels as "Strategy Pattern":
+interface PaymentStrategy {
+    void pay(double amount);
 }
+class UpiPaymentStrategy implements PaymentStrategy { ... }
+class CreditCardPaymentStrategy implements PaymentStrategy { ... }
 ```
-Having core domain entities filled with null fields that only get populated hours later is a major domain modeling code smell.
+**Why do people do this?**  
+Because superficially, it mirrors the *syntactic shape* of Strategy:
+1. There is an interface (`PaymentStrategy`).
+2. There are multiple implementations (`Upi`, `CreditCard`, `NetBanking`).
+3. It can be injected at runtime into a client context (`ShoppingCart` or `Bill`).
 
-#### The Clean Domain Boundary:
-1. **`Ticket` (The Entry Fact)**:
-   - Created at check-in.
-   - Encapsulates: `ticketId`, `vehicleNumber`, `vehicleType`, `assignedSpot`, `entryTime`, `entryGateId`, `TicketStatus (ACTIVE, COMPLETED)`.
-   - Immutable once issued.
-2. **`Bill` / `Invoice` (The Exit Settlement)**:
-   - Created at check-out.
-   - Encapsulates: `billId`, `ticketReference`, `exitTime`, `durationHours`, `totalAmount`, `BillStatus (UNPAID, PAID)`.
-3. **`Payment` (The Financial Transaction)**:
-   - Emitted upon gateway execution.
-   - Encapsulates: `transactionId`, `amount`, `paymentMode (UPI, CARD, CASH)`, `paymentStatus (SUCCESS, FAILED)`.
+Because many developers match the surface mechanics (an interface with polymorphism), they blindly attach the label "Strategy Pattern" to it.
 
----
+### 3.2 The GoF Reality: What is Strategy vs. Adapter?
 
-### Decision 5: Pluggable Strategies (Open/Closed Principle)
+#### GoF Definition of Strategy:
+> *"Define a family of **algorithms**, encapsulate each one, and make them interchangeable. Strategy lets the **algorithm** vary independently from clients that use it."*
 
-The requirements explicitly mandate that both **spot assignment** and **fee calculation** may change in the future.
+The keyword is **algorithm** — internal computation, sorting, searching, mathematical calculation, or spatial routing:
+* `Collections.sort(list, Comparator)` $\to$ `Comparator` is a true **Strategy** (pluggable sorting comparison algorithms).
+* `ParkingAssignmentStrategy` (Nearest Spot vs Distributed vs Random) $\to$ True **Strategy** (spatial graph search algorithms).
+* `FeeCalculationStrategy` (Tiered Slabs vs Flat Rate vs Surge) $\to$ True **Strategy** (mathematical fee computation algorithms).
 
-#### 1. `ParkingAssignmentStrategy` (Strategy Pattern)
-```java
-public interface ParkingAssignmentStrategy {
-    ParkingSpot findSpot(ParkingLot lot, Gate entryGate, VehicleType vehicleType);
-}
-```
-* **`NearestAvailableSpotStrategy`**: Evaluates available spots by computing spatial distance:
-  $$\text{Distance} = (\text{FloorDifference} \times \text{Weight}) + \text{SlotOffset}$$
-* Extensibility: Adding `EcoVehicleSpotStrategy` or `VIPSpotStrategy` requires zero modifications to existing lot code.
+#### GoF Definition of Adapter:
+> *"Convert the interface of a class into another interface clients expect. Adapter lets classes work together that couldn't otherwise because of incompatible interfaces."*
 
-#### 2. `FeeCalculationStrategy` (Strategy Pattern)
-```java
-public interface FeeCalculationStrategy {
-    double calculateFee(Ticket ticket, LocalDateTime exitTime);
-}
-```
-* **`TieredHourlyFeeStrategy`**: Implements the progressive slab pricing model with ceiling hour calculation:
-  $$\text{Billable Hours} = \lceil \text{Duration in Hours} \rceil$$
-* Extensibility: Adding weekend surge rates, flat-rate event passes, or free 15-minute grace periods is isolated into separate strategy implementations.
+When you integrate with Razorpay, Stripe, or Paytm:
+* You are **not** choosing an internal calculation algorithm.
+* You are communicating with an **external 3rd-party vendor API/SDK** whose proprietary methods (`RazorpayClient.createOrder()`, `Stripe.PaymentIntent.create()`) do not match your domain's `processPayment()` signature.
+* Converting their proprietary SDK interface to your domain contract is the textbook definition of the **Adapter Pattern**.
 
----
+#### GoF Definition of Simple Factory / Factory Method:
+> *"Define an interface or helper for creating an object, but let subclasses or runtime parameters decide which class to instantiate."*
 
-### Decision 6: Payment Gateway Integration (Adapter Pattern)
+Selecting which concrete payment adapter to instantiate based on user input (`PaymentMode.RAZORPAY_UPI`, `PaymentMode.CASH`) is the textbook definition of a **Factory**.
 
-#### The Problem: Vendor Lock-In
-Importing third-party SDKs directly (`import com.razorpay.RazorpayClient;`) into domain services welds your business code to external API schemas.
+### 3.3 The Litmus Test: Comparing Strategy vs. 3rd-Party Payment Integration
 
-#### The Solution: The Adapter Pattern
+| Architectural Dimension | Strategy Pattern | 3rd-Party Payment Gateway Integration |
+| :--- | :--- | :--- |
+| **Primary Intent** | Swap an internal **behavioral algorithm** (sorting, mathematical formula, routing). | Bridge an incompatible **external vendor API/SDK** into your domain model. |
+| **External Dependency Conversion?** | **None.** Pure internal logic operating on in-memory domain data. | **Yes.** Wraps proprietary vendor libraries (`RazorpayClient`, `StripeSDK`). |
+| **GoF Classification** | **Behavioral Pattern**. | **Structural Pattern** (Adapter) + **Creational Pattern** (Factory). |
+| **Failure Semantics** | Fails due to algorithmic conditions or invalid data. | Fails due to network I/O, network timeouts, API auth failures, vendor webhooks. |
+
+### 3.4 The Architectural Architecture:
 ```
 [ExitGate / Billing] ---> (PaymentProcessor Interface)
                                     ▲
@@ -132,48 +95,62 @@ Importing third-party SDKs directly (`import com.razorpay.RazorpayClient;`) into
                                     │ wraps
                          [External RazorpayClient SDK]
 ```
-If the business decides to switch to Stripe, Paytm, or Cash on Delivery, only a new adapter class is added without altering any billing domain logic.
+If tomorrow the business replaces Razorpay with Stripe or Cashfree, our billing engine never changes — we merely write `StripePaymentAdapter` and add it to `PaymentProcessorFactory`.
 
 ---
 
-## 2. Deep Dive: The GoF State Pattern & Classic Scenarios
+## 4. Deep Dive: The GoF State Pattern & Dynamic Gate Lane Reversal
 
-### What is the State Pattern?
-The State Pattern allows an object to alter its behavior when its internal state changes. The object appears to change its class by delegating behavior to an interface representing its current state.
-
-### The Problem It Solves: `if/else` Flag Pollution
-Without the State pattern, classes with lifecycle phases (e.g. an ATM or Order) end up with massive, repetitive `if/else` or `switch` blocks inside *every single method*:
+### 4.1 The Problem It Solves: `if/else` Flag Spaghetti
+Without the State Pattern, entities with operational modes (like toll gates, ATMs, or vending machines) end up with massive, nested conditional checks across every single method:
 ```java
-// Anti-Pattern: Primitive Flag Spaghetti
-if (state == NO_CARD) { ... }
-else if (state == HAS_CARD) { ... }
-else if (state == PIN_ENTERED) { ... }
+// ❌ Anti-Pattern: Primitive Flag Pollution
+public Ticket processEntry(Vehicle v) {
+    if (this.mode == GateMode.MAINTENANCE) {
+        throw new GateInMaintenanceException();
+    } else if (this.mode == GateMode.EXIT_ONLY) {
+        throw new InvalidOperationException("Gate is in exit-only mode!");
+    }
+    // actual entry logic...
+}
 ```
 This violates:
-1. **Single Responsibility Principle**: The context class contains the business logic for every state.
-2. **Open/Closed Principle**: Adding a new state (`FRAUD_SUSPECTED`) requires editing every single method in the class.
+1. **Single Responsibility Principle**: The `Gate` class becomes bloated with validation logic for all operational states.
+2. **Open/Closed Principle**: Adding a new mode (e.g. `VIP_EXCLUSIVE_MODE`) requires editing every single method in `Gate`.
 
-### Classic Real-World Scenarios for the State Pattern:
-1. **Vending Machine**: `NoCoinState` $\to$ `HasCoinState` $\to$ `DispensingState` $\to$ `SoldOutState`. (Cannot dispense without coins, cannot refund while dispensing).
-2. **ATM Machine**: `NoCardState` $\to$ `HasCardState` $\to$ `PinEnteredState` $\to$ `CashDispensedState`.
-3. **E-Commerce Order Lifecycle**: `Created` $\to$ `PaymentPending` $\to$ `Processing` $\to$ `Shipped` $\to$ `Delivered` (or `Cancelled`). An order in `Shipped` cannot be cancelled directly by the user.
-4. **Seat Reservation (BookMyShow)**: `AVAILABLE` $\to$ `TEMPORARILY_LOCKED` $\to$ `BOOKED` (or timeout rolls back to `AVAILABLE`).
-5. **Reconfigurable Highway Toll / Gate Lanes**: `EntryModeState` $\to$ `ExitModeState` $\to$ `MaintenanceModeState`. Allows dynamic 5:00 PM peak-rush lane role reversal at runtime without restarting servers.
+### 4.2 The Solution: State Pattern on Gate
+```java
+public interface GateModeState {
+    Ticket processEntry(Gate gate, Vehicle vehicle);
+    Bill processExit(Gate gate, Ticket ticket);
+    void enterMaintenance(Gate gate);
+    void resumeNormalOperation(Gate gate);
+}
 
-### State Pattern vs. Strategy Pattern:
-
-| Dimension | Strategy Pattern | State Pattern |
-| :--- | :--- | :--- |
-| **Intent** | Swap an **algorithm** (e.g., QuickSort vs MergeSort, UPI vs Card, Nearest vs Distributed Spot). | Model an object whose **lifecycle behavior changes dynamically** over time. |
-| **Who initiates change?** | The **client** usually chooses which Strategy to inject at initialization. | The **states themselves** trigger transitions to subsequent states automatically as actions occur. |
-| **Mutual Knowledge** | Strategies have zero awareness of each other. | States often know and instantiate the next valid state. |
+public class EntryModeState implements GateModeState {
+    public Ticket processEntry(Gate gate, Vehicle vehicle) {
+        // execute entry flow, lower barrier, issue ticket
+    }
+    public Bill processExit(Gate gate, Ticket ticket) {
+        throw new IllegalStateException("Cannot process exit at an Entry Gate!");
+    }
+    // ...
+}
+```
+### 4.3 Real-World Application: 5:00 PM Rush-Hour Lane Reversal
+In major airports, tech parks, and toll plazas:
+* **Morning (8:00 AM - 11:00 AM)**: Gates 1, 2, 3, and 4 are configured as **Entry Lanes**. Only Gate 5 is an Exit Lane.
+* **Evening (5:00 PM - 8:00 PM)**: Gate 2 and 3 dynamically flip their state to **Exit Lanes** to drain the parking lot quickly.
+* With the State pattern, this transition happens cleanly in-memory:
+  `gate2.setModeState(new ExitModeState());`
+  Zero server downtime, zero code rewrites.
 
 ---
 
-## 3. Advanced Gate Architecture: Role Interfaces & Multi-Invoker Command Pattern
+## 5. Advanced Gate Architecture: Role Interfaces & Command Pattern
 
-### 1. Role-Based Gate Interfaces (Interface Segregation Principle)
-To support dedicated entry gates, dedicated exit gates, and bidirectional gates cleanly without runtime exceptions:
+### 5.1 Role-Based Gate Interfaces (Interface Segregation Principle)
+To support dedicated entry gates, dedicated exit gates, and bidirectional gates cleanly without throwing runtime exceptions:
 ```java
 public interface EntryCapable {
     Ticket processEntry(Vehicle vehicle);
@@ -186,6 +163,7 @@ public interface ExitCapable {
 public abstract class Gate {
     protected final String gateId;
     protected Operator currentOperator;
+    protected Barrier barrier;
 }
 
 public class EntryGate extends Gate implements EntryCapable { ... }
@@ -193,26 +171,28 @@ public class ExitGate extends Gate implements ExitCapable { ... }
 public class BidirectionalGate extends Gate implements EntryCapable, ExitCapable { ... }
 ```
 
-### 2. Multi-Invoker Decoupling (The Command Pattern for Entries)
-In modern automated parking, the trigger for an entry is not solely a guard pressing a button:
+### 5.2 Multi-Invoker Decoupling (Command Pattern)
+In an enterprise smart parking facility, a ticket is not solely issued by a human guard pressing a button:
 * **Invokers**:
-  - `GuardConsoleTerminal` (Manual UI entry)
-  - `AnprCameraScanner` (Automatic Number Plate Recognition)
-  - `RfidFastagReader` (Passive windshield toll transponder)
-  - `MagneticGroundLoop` (Inductive metal sensor under asphalt)
+  1. `GuardConsoleTerminal` (Manual UI touch screen)
+  2. `AnprCameraScanner` (Automatic Number Plate Recognition camera)
+  3. `RfidFastagReader` (Toll transponder reader on the ceiling)
+  4. `MagneticGroundLoop` (Inductive metal sensor in the asphalt)
 * **Command Encapsulation**:
   `IssueTicketCommand(EntryCapable gate, Vehicle vehicle)` encapsulates the action so any hardware sensor or user interface can execute entry without coupling to internal lot orchestration.
+* **Hardware Decoupling**:
+  `Barrier` actuation is encapsulated in `OpenBarrierCommand` and `CloseBarrierCommand`. If the physical stepper motor or relay protocol changes, domain gate logic remains 100% untouched.
 
 ---
 
-## 4. Deep Dive: Strategy + Decorator Billing Pipeline
+## 6. Deep Dive: Strategy + Decorator Billing Pipeline
 
-### The Problem: Combining Dynamic Slabs with Optional Add-Ons
-A customer's final invoice often consists of two distinct parts:
-1. **The Base Parking Fee**: Calculated based on duration (e.g. 5.5 hrs $\to$ 6 billable hours), vehicle type, and progressive hourly rate slabs.
-2. **Optional Value-Added Services**: Extra amenities chosen during the stay (e.g., EV Charging, Car Wash, Valet Service, Discount Vouchers).
+### 6.1 The Problem: Combining Dynamic Slabs with Optional Add-Ons
+A customer's final invoice consists of two distinct components:
+1. **The Base Parking Fee**: Calculated from stay duration (e.g. 5.5 hours $\to$ 6 billable hours), vehicle type, and progressive hourly rate slabs.
+2. **Optional Value-Added Services**: Extra amenities chosen during the stay (e.g. EV Charging, Car Wash, Valet Service, Detailing).
 
-### The Architectural Collaboration:
+### 6.2 The Architectural Collaboration:
 
 ```
 [Ticket & ExitTime] 
@@ -237,64 +217,77 @@ A customer's final invoice often consists of two distinct parts:
 [Final Bill Settlement]
 ```
 
-### 1. Strategy Pattern Role
-Answers: *"How is time translated into cost for this vehicle?"*
-* Encapsulates the progressive tiered slabs.
-* Outputs the raw base charge: `double baseAmount = feeStrategy.calculateFee(ticket, exitTime);` (e.g. ₹180.0).
+### 6.3 Code Architecture:
+```java
+public interface BillableItem {
+    double getCost();
+    String getDescription();
+}
 
-### 2. Decorator Pattern Role
-Answers: *"How do we layer optional amenities without a combinatorial $2^N$ subclass explosion?"*
-* Defines a uniform interface:
-  ```java
-  public interface BillableItem {
-      double getCost();
-      String getDescription();
-  }
-  ```
-* **Base Component**:
-  ```java
-  public class BaseParkingCharge implements BillableItem {
-      private final double amount;
-      public BaseParkingCharge(double amount) { this.amount = amount; }
-      public double getCost() { return amount; }
-      public String getDescription() { return "Parking Fee: ₹" + amount; }
-  }
-  ```
-* **Decorators**:
-  ```java
-  public abstract class BillableItemDecorator implements BillableItem {
-      protected final BillableItem wrapped;
-      public BillableItemDecorator(BillableItem wrapped) { this.wrapped = wrapped; }
-  }
+public class BaseParkingCharge implements BillableItem {
+    private final double amount;
+    public BaseParkingCharge(double amount) { this.amount = amount; }
+    public double getCost() { return amount; }
+    public String getDescription() { return "Parking Fee: ₹" + amount; }
+}
 
-  public class EvChargingDecorator extends BillableItemDecorator {
-      public EvChargingDecorator(BillableItem wrapped) { super(wrapped); }
-      public double getCost() { return wrapped.getCost() + 150.0; }
-      public String getDescription() { return wrapped.getDescription() + " + EV Charging (₹150)"; }
-  }
+public abstract class BillableItemDecorator implements BillableItem {
+    protected final BillableItem wrapped;
+    public BillableItemDecorator(BillableItem wrapped) { this.wrapped = wrapped; }
+}
 
-  public class CarWashDecorator extends BillableItemDecorator {
-      public CarWashDecorator(BillableItem wrapped) { super(wrapped); }
-      public double getCost() { return wrapped.getCost() + 250.0; }
-      public String getDescription() { return wrapped.getDescription() + " + Car Wash (₹250)"; }
-  }
-  ```
+public class EvChargingDecorator extends BillableItemDecorator {
+    public EvChargingDecorator(BillableItem wrapped) { super(wrapped); }
+    public double getCost() { return wrapped.getCost() + 150.0; }
+    public String getDescription() { return wrapped.getDescription() + " + EV Charging (₹150.0)"; }
+}
+
+public class CarWashDecorator extends BillableItemDecorator {
+    public CarWashDecorator(BillableItem wrapped) { super(wrapped); }
+    public double getCost() { return wrapped.getCost() + 250.0; }
+    public String getDescription() { return wrapped.getDescription() + " + Car Wash (₹250.0)"; }
+}
+```
 
 ---
 
-## 5. Factory Pattern Analysis: When is it Useful vs. Over-Engineered?
+## 7. Progressive Tiered Hourly Pricing Model
 
-### When Factory is an Anti-Pattern / Pointless Boilerplate:
-If an entity like `ParkingSpot` or `Vehicle` does not have polymorphic subclasses, creating a factory that merely executes:
+### 7.1 Rate Matrix
+Partial hours are rounded up using ceiling math: $\text{billableHours} = \lceil \text{durationInHours} \rceil$.
+
+| Vehicle Type | 0 - 2 Hours | 2 - 4 Hours | 4 - 6 Hours | 6+ Hours |
+| :--- | :--- | :--- | :--- | :--- |
+| **BIKE** | ₹20 / hr | ₹25 / hr | ₹30 / hr | ₹40 / hr |
+| **CAR** | ₹25 / hr | ₹30 / hr | ₹35 / hr | ₹45 / hr |
+| **TRUCK** | ₹50 / hr | ₹60 / hr | ₹65 / hr | ₹80 / hr |
+
+### 7.2 Progressive Slab Calculation Walkthrough (The ₹180 Car Benchmark)
+**Example**: A `CAR` enters at `10:00 AM` and exits at `03:30 PM`.
+1. **Raw Duration**: 5 hours, 30 minutes = 5.5 hours.
+2. **Ceiling Rounding**: $\lceil 5.5 \rceil = 6 \text{ billable hours}$.
+3. **Progressive Slab Breakdown**:
+   * **Slab 1 (Hours 0 to 2 = 2 hrs)**: $2 \times ₹25 = \mathbf{₹50}$
+   * **Slab 2 (Hours 2 to 4 = 2 hrs)**: $2 \times ₹30 = \mathbf{₹60}$
+   * **Slab 3 (Hours 4 to 6 = 2 hrs)**: $2 \times ₹35 = \mathbf{₹70}$
+   * **Slab 4 (Hours 6+ = 0 hrs)**: $0 \times ₹45 = \mathbf{₹0}$
+4. **Total Base Fee**: $₹50 + ₹60 + ₹70 = \mathbf{₹180.00}$.
+
+---
+
+## 8. Factory Pattern Analysis: When is it Useful vs. Over-Engineered?
+
+### 8.1 When Factory is an Anti-Pattern (Pointless Boilerplate):
+If an entity like `ParkingSpot` or `Vehicle` does not have polymorphic subtypes, creating a factory that merely executes:
 ```java
 // ❌ Pointless Pass-Through Boilerplate
 public static ParkingSpot createSpot(...) {
     return new ParkingSpot(...);
 }
 ```
-...adds zero architectural value and violates the YAGNI principle.
+...adds zero architectural value, inflates cognitive load, and violates the YAGNI principle.
 
-### When Factory IS Legitimate in this System:
+### 8.2 When Factory IS Legitimate in this System:
 1. **Parameterized `PaymentProcessorFactory`**:
    - Takes a `PaymentMode` enum (`RAZORPAY_UPI`, `RAZORPAY_CARD`, `CASH`) and instantiates the correct adapter implementing `PaymentProcessor`.
 2. **`PricingSlabFactory`**:
