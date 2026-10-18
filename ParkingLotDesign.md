@@ -133,3 +133,72 @@ Importing third-party SDKs directly (`import com.razorpay.RazorpayClient;`) into
                          [External RazorpayClient SDK]
 ```
 If the business decides to switch to Stripe, Paytm, or Cash on Delivery, only a new adapter class is added without altering any billing domain logic.
+
+---
+
+## 2. Deep Dive: The GoF State Pattern & Classic Scenarios
+
+### What is the State Pattern?
+The State Pattern allows an object to alter its behavior when its internal state changes. The object appears to change its class by delegating behavior to an interface representing its current state.
+
+### The Problem It Solves: `if/else` Flag Pollution
+Without the State pattern, classes with lifecycle phases (e.g. an ATM or Order) end up with massive, repetitive `if/else` or `switch` blocks inside *every single method*:
+```java
+// Anti-Pattern: Primitive Flag Spaghetti
+if (state == NO_CARD) { ... }
+else if (state == HAS_CARD) { ... }
+else if (state == PIN_ENTERED) { ... }
+```
+This violates:
+1. **Single Responsibility Principle**: The context class contains the business logic for every state.
+2. **Open/Closed Principle**: Adding a new state (`FRAUD_SUSPECTED`) requires editing every single method in the class.
+
+### Classic Real-World Scenarios for the State Pattern:
+1. **Vending Machine**: `NoCoinState` $\to$ `HasCoinState` $\to$ `DispensingState` $\to$ `SoldOutState`. (Cannot dispense without coins, cannot refund while dispensing).
+2. **ATM Machine**: `NoCardState` $\to$ `HasCardState` $\to$ `PinEnteredState` $\to$ `CashDispensedState`.
+3. **E-Commerce Order Lifecycle**: `Created` $\to$ `PaymentPending` $\to$ `Processing` $\to$ `Shipped` $\to$ `Delivered` (or `Cancelled`). An order in `Shipped` cannot be cancelled directly by the user.
+4. **Seat Reservation (BookMyShow)**: `AVAILABLE` $\to$ `TEMPORARILY_LOCKED` $\to$ `BOOKED` (or timeout rolls back to `AVAILABLE`).
+5. **Reconfigurable Highway Toll / Gate Lanes**: `EntryModeState` $\to$ `ExitModeState` $\to$ `MaintenanceModeState`. Allows dynamic 5:00 PM peak-rush lane role reversal at runtime without restarting servers.
+
+### State Pattern vs. Strategy Pattern:
+
+| Dimension | Strategy Pattern | State Pattern |
+| :--- | :--- | :--- |
+| **Intent** | Swap an **algorithm** (e.g., QuickSort vs MergeSort, UPI vs Card, Nearest vs Distributed Spot). | Model an object whose **lifecycle behavior changes dynamically** over time. |
+| **Who initiates change?** | The **client** usually chooses which Strategy to inject at initialization. | The **states themselves** trigger transitions to subsequent states automatically as actions occur. |
+| **Mutual Knowledge** | Strategies have zero awareness of each other. | States often know and instantiate the next valid state. |
+
+---
+
+## 3. Advanced Gate Architecture: Role Interfaces & Multi-Invoker Command Pattern
+
+### 1. Role-Based Gate Interfaces (Interface Segregation Principle)
+To support dedicated entry gates, dedicated exit gates, and bidirectional gates cleanly without runtime exceptions:
+```java
+public interface EntryCapable {
+    Ticket processEntry(Vehicle vehicle);
+}
+
+public interface ExitCapable {
+    Bill processExit(Ticket ticket);
+}
+
+public abstract class Gate {
+    protected final String gateId;
+    protected Operator currentOperator;
+}
+
+public class EntryGate extends Gate implements EntryCapable { ... }
+public class ExitGate extends Gate implements ExitCapable { ... }
+public class BidirectionalGate extends Gate implements EntryCapable, ExitCapable { ... }
+```
+
+### 2. Multi-Invoker Decoupling (The Command Pattern for Entries)
+In modern automated parking, the trigger for an entry is not solely a guard pressing a button:
+* **Invokers**:
+  - `GuardConsoleTerminal` (Manual UI entry)
+  - `AnprCameraScanner` (Automatic Number Plate Recognition)
+  - `RfidFastagReader` (Passive windshield toll transponder)
+  - `MagneticGroundLoop` (Inductive metal sensor under asphalt)
+* **Command Encapsulation**:
+  `IssueTicketCommand(EntryCapable gate, Vehicle vehicle)` encapsulates the action so any hardware sensor or user interface can execute entry without coupling to internal lot orchestration.
