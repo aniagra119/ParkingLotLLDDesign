@@ -202,3 +202,100 @@ In modern automated parking, the trigger for an entry is not solely a guard pres
   - `MagneticGroundLoop` (Inductive metal sensor under asphalt)
 * **Command Encapsulation**:
   `IssueTicketCommand(EntryCapable gate, Vehicle vehicle)` encapsulates the action so any hardware sensor or user interface can execute entry without coupling to internal lot orchestration.
+
+---
+
+## 4. Deep Dive: Strategy + Decorator Billing Pipeline
+
+### The Problem: Combining Dynamic Slabs with Optional Add-Ons
+A customer's final invoice often consists of two distinct parts:
+1. **The Base Parking Fee**: Calculated based on duration (e.g. 5.5 hrs $\to$ 6 billable hours), vehicle type, and progressive hourly rate slabs.
+2. **Optional Value-Added Services**: Extra amenities chosen during the stay (e.g., EV Charging, Car Wash, Valet Service, Discount Vouchers).
+
+### The Architectural Collaboration:
+
+```
+[Ticket & ExitTime] 
+         │
+         │ 1. Strategy Pattern computes base time & slabs
+         ▼
+[FeeCalculationStrategy (TieredHourlyFeeStrategy)]
+         │
+         │ Output: Base Parking Fee = ₹180.0
+         ▼
+[BaseParkingCharge (₹180.0)]
+         │
+         │ 2. Decorator Pattern wraps optional add-on services!
+         ▼
+[EvChargingDecorator (+ ₹150.0)]
+         │
+         ▼
+[CarWashDecorator (+ ₹250.0)]
+         │
+         │ Output: Final Itemized Bill = ₹580.0
+         ▼
+[Final Bill Settlement]
+```
+
+### 1. Strategy Pattern Role
+Answers: *"How is time translated into cost for this vehicle?"*
+* Encapsulates the progressive tiered slabs.
+* Outputs the raw base charge: `double baseAmount = feeStrategy.calculateFee(ticket, exitTime);` (e.g. ₹180.0).
+
+### 2. Decorator Pattern Role
+Answers: *"How do we layer optional amenities without a combinatorial $2^N$ subclass explosion?"*
+* Defines a uniform interface:
+  ```java
+  public interface BillableItem {
+      double getCost();
+      String getDescription();
+  }
+  ```
+* **Base Component**:
+  ```java
+  public class BaseParkingCharge implements BillableItem {
+      private final double amount;
+      public BaseParkingCharge(double amount) { this.amount = amount; }
+      public double getCost() { return amount; }
+      public String getDescription() { return "Parking Fee: ₹" + amount; }
+  }
+  ```
+* **Decorators**:
+  ```java
+  public abstract class BillableItemDecorator implements BillableItem {
+      protected final BillableItem wrapped;
+      public BillableItemDecorator(BillableItem wrapped) { this.wrapped = wrapped; }
+  }
+
+  public class EvChargingDecorator extends BillableItemDecorator {
+      public EvChargingDecorator(BillableItem wrapped) { super(wrapped); }
+      public double getCost() { return wrapped.getCost() + 150.0; }
+      public String getDescription() { return wrapped.getDescription() + " + EV Charging (₹150)"; }
+  }
+
+  public class CarWashDecorator extends BillableItemDecorator {
+      public CarWashDecorator(BillableItem wrapped) { super(wrapped); }
+      public double getCost() { return wrapped.getCost() + 250.0; }
+      public String getDescription() { return wrapped.getDescription() + " + Car Wash (₹250)"; }
+  }
+  ```
+
+---
+
+## 5. Factory Pattern Analysis: When is it Useful vs. Over-Engineered?
+
+### When Factory is an Anti-Pattern / Pointless Boilerplate:
+If an entity like `ParkingSpot` or `Vehicle` does not have polymorphic subclasses, creating a factory that merely executes:
+```java
+// ❌ Pointless Pass-Through Boilerplate
+public static ParkingSpot createSpot(...) {
+    return new ParkingSpot(...);
+}
+```
+...adds zero architectural value and violates the YAGNI principle.
+
+### When Factory IS Legitimate in this System:
+1. **Parameterized `PaymentProcessorFactory`**:
+   - Takes a `PaymentMode` enum (`RAZORPAY_UPI`, `RAZORPAY_CARD`, `CASH`) and instantiates the correct adapter implementing `PaymentProcessor`.
+2. **`PricingSlabFactory`**:
+   - Decouples default rate slab tables from strategy logic, providing canonical rate slabs for `BIKE`, `CAR`, and `TRUCK`.
