@@ -2,18 +2,16 @@ package com.parkinglot.strategy.fee.slab;
 
 import com.parkinglot.config.ParkingConfiguration;
 import com.parkinglot.enums.VehicleType;
-import com.parkinglot.model.Ticket;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 /**
- * Progressive tiered hourly fee calculation strategy.
- * Progressively sums rates across hourly slabs with ceiling round-up.
+ * Concrete Strategy in the Template Method Pattern:
+ * Implements {@link #computeSlabFee(long, List)} to progressively accumulate hourly rates
+ * across sequential tier slabs.
  */
 public class TieredHourlyFeeStrategy extends SlabBasedFeeStrategy {
 
@@ -64,21 +62,7 @@ public class TieredHourlyFeeStrategy extends SlabBasedFeeStrategy {
     }
 
     @Override
-    public double calculateFee(Ticket ticket, Instant exitTime) {
-        Objects.requireNonNull(ticket, "Ticket cannot be null");
-        Objects.requireNonNull(exitTime, "Exit time cannot be null");
-
-        long billableHours = calculateBillableHours(ticket.getEntryTime(), exitTime);
-        if (billableHours <= 0) {
-            return 0.0;
-        }
-
-        VehicleType vType = ticket.getVehicle().type();
-        List<PricingSlab> slabs = slabsByVehicleType.get(vType);
-        if (slabs == null || slabs.isEmpty()) {
-            throw new IllegalStateException("No pricing slabs configured for vehicle type: " + vType);
-        }
-
+    protected double computeSlabFee(long billableHours, List<PricingSlab> slabs) {
         double totalFee = 0.0;
         for (long hour = 0; hour < billableHours; hour++) {
             final long currentHour = hour;
@@ -89,7 +73,6 @@ public class TieredHourlyFeeStrategy extends SlabBasedFeeStrategy {
 
             totalFee += applicableSlab.hourlyRate();
         }
-
         return totalFee;
     }
 }

@@ -113,4 +113,11 @@ class FeeCalculationStrategyTest {
         assertEquals(50.0, flatStrategy.calculateFee(carTicket, future));
         assertEquals(100.0, flatStrategy.calculateFee(truckTicket, future));
     }
+    @Test
+    @DisplayName("SlabBasedFeeStrategy enforces Template Method: null checks and delegated hook calculation")
+    void testTemplateMethodEnforcement() {
+        assertThrows(NullPointerException.class, () -> tieredStrategy.calculateFee(null, Instant.now()));
+        Ticket ticket = new Ticket("S1", 1, new Vehicle("C1", VehicleType.CAR), Instant.now());
+        assertThrows(NullPointerException.class, () -> tieredStrategy.calculateFee(ticket, null));
+    }
 }

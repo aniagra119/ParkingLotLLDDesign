@@ -2,7 +2,7 @@
 
 [![Java 21](https://img.shields.io/badge/Java-21-ED8B00?style=for-the-badge&logo=openjdk&logoColor=white)](https://openjdk.org/projects/jdk/21/)
 [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen?style=for-the-badge&logo=apachemaven&logoColor=white)](pom.xml)
-[![Tests](https://img.shields.io/badge/Tests-69%20Passing-success?style=for-the-badge)](src/test)
+[![Tests](https://img.shields.io/badge/Tests-70%20Passing-success?style=for-the-badge)](src/test)
 [![Design Patterns](https://img.shields.io/badge/Design_Patterns-GoF_%26_SOLID-blueviolet?style=for-the-badge)](ParkingLotDesign.md)
 
 A production-grade, extensible Low-Level Design (LLD) for a multi-floor, multi-gate automated parking lot system in Java 21, built using first-principles Object-Oriented Design and Gang of Four (GoF) design patterns.
@@ -138,7 +138,7 @@ com.parkinglot/
 mvn clean test
 ```
 
-69 automated tests covering:
+70 automated tests covering:
 - Spatial distance heuristics & elevation preferences
 - Progressive hourly pricing & the ₹180.00 Car benchmark
 - Physical barrier actuation & command execution audits
