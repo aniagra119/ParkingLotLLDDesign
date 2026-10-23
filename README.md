@@ -54,9 +54,8 @@ A production-grade, extensible Low-Level Design (LLD) for a multi-floor, multi-g
 | Pattern | Category | Where Applied | Concrete Architectural Justification |
 | :--- | :--- | :--- | :--- |
 | **Facade** | Structural | `ParkingLot` class | Hides complex subsystem orchestration (`FloorManager`, `GateManager`, `Billing`) behind clean methods (`parkVehicle`, `processExit`). |
-| **Strategy (x2)** | Behavioral | `ParkingAssignmentStrategy`<br>`FeeCalculationStrategy` | **1.** Swaps spatial search heuristics (Nearest Spot vs Random) in $O(1)$.<br>**2.** Swaps fee math (Progressive Tiered Slabs vs Flat Rate) using `SlabBasedFeeStrategy`. |
-| **Decorator** | Structural | `AmenityServiceDecorator` on `BillableItem` | Dynamically layers polymorphic amenity services (`EvChargingService`, `CarWashService`) onto base parking charges without subclass explosions. |
-| **Adapter** | Structural | `RazorpayPaymentAdapter` | Converts proprietary 3rd-party vendor SDK calls (`ExternalRazorpayClient`) to our domain `PaymentProcessor` contract. |
+| **Strategy (x2)** | Behavioral | `com.parkinglot.strategy.assignment`<br>`com.parkinglot.strategy.fee` | **1.** Swaps spatial spot allocation heuristics (`NearestAvailableSpotStrategy`).<br>**2.** Swaps mathematical fee algorithms (`TieredHourlyFeeStrategy`, `FlatRateFeeStrategy`). |
+| **Adapter** | Structural | `com.parkinglot.payment.adapter.RazorpayPaymentAdapter` | Converts proprietary 3rd-party vendor SDK calls (`ExternalRazorpayClient`) to our domain `PaymentProcessor` contract. |
 | **Factory** | Creational | `PaymentProcessorFactory` | Centralizes runtime instantiation of payment adapters based on `PaymentMode`. |
 | **Builder** | Creational | `ParkingLotBuilder` | Assembles complex multi-floor, multi-gate parking lot hierarchies cleanly. |
 

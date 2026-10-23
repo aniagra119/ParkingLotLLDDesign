@@ -1,5 +1,7 @@
-package com.parkinglot.payment;
+package com.parkinglot.payment.adapter;
 
+import com.parkinglot.payment.PaymentProcessor;
+import com.parkinglot.payment.external.ExternalRazorpayClient;
 import java.util.Objects;
 
 /**

@@ -7,7 +7,7 @@ import com.parkinglot.model.Gate;
 import com.parkinglot.model.Coordinates;
 import com.parkinglot.model.ParkingFloor;
 import com.parkinglot.model.ParkingSpot;
-import com.parkinglot.payment.ExternalRazorpayClient;
+import com.parkinglot.payment.external.ExternalRazorpayClient;
 import com.parkinglot.payment.PaymentProcessorFactory;
 import com.parkinglot.strategy.assignment.NearestAvailableSpotStrategy;
 import com.parkinglot.strategy.assignment.ParkingAssignmentStrategy;

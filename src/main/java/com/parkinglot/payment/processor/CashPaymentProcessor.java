@@ -1,4 +1,6 @@
-package com.parkinglot.payment;
+package com.parkinglot.payment.processor;
+
+import com.parkinglot.payment.PaymentProcessor;
 
 /**
  * Offline physical cash settlement processor.

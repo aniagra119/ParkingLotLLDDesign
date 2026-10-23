@@ -38,7 +38,10 @@ To adhere to the **Common Closure Principle (CCP)** and prevent the generic `mod
 * **`com.parkinglot.strategy.assignment`**: Spatial spot allocation algorithms (`ParkingAssignmentStrategy`, `NearestAvailableSpotStrategy`). Separated by strategy type because spatial routing heuristics evolve independently from financial formulas.
 * **`com.parkinglot.strategy.fee`**: Mathematical pricing and duration billing algorithms (`FeeCalculationStrategy`, `PricingSlab`, `SlabBasedFeeStrategy`, `TieredHourlyFeeStrategy`, `FlatRateFeeStrategy`).
 * **`com.parkinglot.billing`**: Financial settlement domain (`Bill`, `AmenityService`, `CarWashService`, `EvChargingService`). Represents invoices and fiscal transactions rather than physical parking lot assets.
-* **`com.parkinglot.payment`**: External vendor adapters and payment processors (`PaymentProcessor`, `RazorpayPaymentAdapter`, `PaymentProcessorFactory`).
+* **`com.parkinglot.payment`**: Payment domain contract (Port) and factory orchestration (`PaymentProcessor`, `PaymentProcessorFactory`).
+  * **`com.parkinglot.payment.processor`**: Native first-party domain processors (`CashPaymentProcessor`).
+  * **`com.parkinglot.payment.adapter`**: Secondary Driven Adapters converting third-party APIs into domain contracts (`RazorpayPaymentAdapter`).
+  * **`com.parkinglot.payment.external`**: External third-party vendor SDKs and network clients (`ExternalRazorpayClient`).
 * **`com.parkinglot.builder`**: Fluent construction hierarchy (`ParkingLotBuilder`).
 * **`com.parkinglot`**: Facade entry point coordinating subsystems (`ParkingLot`).
 
@@ -162,3 +165,30 @@ In practice:
 1. **Pass-Through Overhead Without Value**: Without hardware message queues, asynchronous IoT drivers, or the **Command Pattern** (e.g. queuing or undoing barrier movements), `Barrier` acts as a useless 1-line wrapper.
 2. **Law of Demeter Violation**: Invocations like `gate.getBarrier().open()` force external callers to traverse through `Gate` to reach an internal component.
 3. **Domain Reality**: `Gate` is a physical spatial model entity (residing on a floor, with 2D/3D coordinates and a gate type) that directly controls entry/exit access. Moving `Gate` into `com.parkinglot.model` and exposing `gate.open()` / `gate.close()` directly eliminates redundant packaging and ceremonial abstractions while maintaining clean domain cohesion.
+
+---
+
+## 9. Architectural Justification: Hexagonal Organization of the Payment Bounded Context
+
+### 9.1 Why Processors, Adapters, and External APIs Are Fundamentally Different
+In naive OOP designs, everything relating to payments is dumped into a single `payment` package. This conflates three fundamentally different architectural layers:
+
+1. **The Domain Port (`com.parkinglot.payment.PaymentProcessor`)**:
+   - Represents the core domain interface for financial settlement.
+   - Clean signature (`processPayment(billId, amountInRupees)`) adhering to domain types.
+   - Orchestrated by `PaymentProcessorFactory`.
+
+2. **First-Party Domain Processors (`com.parkinglot.payment.processor.CashPaymentProcessor`)**:
+   - Direct implementations of the port for offline/internal domain workflows (e.g. cash booth settlement).
+   - Require no foreign protocol translation.
+
+3. **Structural Driven Adapters (`com.parkinglot.payment.adapter.RazorpayPaymentAdapter`)**:
+   - Implements the domain `PaymentProcessor` port while encapsulating a reference to an external vendor client.
+   - Performs currency conversion (Rupees $\to$ Paise), payload mapping, error-code translation, and network response normalization.
+
+4. **External Third-Party SDKs / Clients (`com.parkinglot.payment.external.ExternalRazorpayClient`)**:
+   - Simulates or interfaces with vendor proprietary libraries (e.g. `com.razorpay.RazorpayClient`, Stripe SDK).
+   - Uses vendor-specific data structures, currency denominations, and authentication headers.
+   - Contains zero knowledge of our parking lot domain, `Bill`, or `Ticket`.
+
+This Ports & Adapters (Hexagonal) separation guarantees that introducing Stripe, PayPal, or mock testing environments requires writing an adapter in `payment.adapter` without touching core domain rules.

@@ -1,4 +1,4 @@
-package com.parkinglot.payment;
+package com.parkinglot.payment.external;
 
 /**
  * Simulates a vendor proprietary SDK (e.g. com.razorpay.RazorpayClient)
