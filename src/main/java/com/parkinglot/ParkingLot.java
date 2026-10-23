@@ -27,6 +27,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Facade Pattern: Unified, thread-safe entry point coordinating spot allocation,
  * ticketing, billing, dynamic amenity decorators, payments, and gate barriers.
+ * Strictly adheres to hierarchical delegation without duplicate spot indexing.
  */
 public class ParkingLot {
     private final String lotId;
@@ -37,7 +38,6 @@ public class ParkingLot {
     private final PaymentProcessorFactory paymentProcessorFactory;
 
     private final Map<String, Ticket> activeTickets;
-    private final Map<String, ParkingSpot> spotIndex;
 
     public ParkingLot(
             String lotId,
@@ -58,12 +58,6 @@ public class ParkingLot {
         }
 
         this.activeTickets = new ConcurrentHashMap<>();
-        this.spotIndex = new ConcurrentHashMap<>();
-        for (ParkingFloor floor : this.floors) {
-            for (ParkingSpot spot : floor.getSpots()) {
-                this.spotIndex.put(spot.getSpotId(), spot);
-            }
-        }
     }
 
     /**
@@ -103,7 +97,7 @@ public class ParkingLot {
      * 2. Computes base fee via Strategy.
      * 3. Wraps all consumed amenity services dynamically via universal Decorator.
      * 4. Processes payment via Adapter Factory.
-     * 5. Vacates physical spot, cycles barrier, and closes session.
+     * 5. Delegates spot release to the appropriate ParkingFloor, cycles barrier, and closes session.
      */
     public synchronized Bill processExit(String gateId, String ticketNumber, Instant exitTime, PaymentMode paymentMode) {
         Gate gate = getValidatedGate(gateId, GateType.EXIT);
@@ -133,11 +127,19 @@ public class ParkingLot {
 
         bill.markPaid();
 
-        // 4. Vacate physical spot and unregister active ticket
-        ParkingSpot spot = spotIndex.get(ticket.getSpotId());
-        if (spot != null) {
-            spot.vacate();
+        // 4. Delegate to appropriate ParkingFloor to vacate physical spot (No redundant spotIndex)
+        ParkingFloor targetFloor = floors.stream()
+                .filter(f -> f.getFloorNumber() == ticket.getFloorNumber())
+                .findFirst()
+                .orElse(null);
+
+        if (targetFloor != null) {
+            ParkingSpot spot = targetFloor.getSpot(ticket.getSpotId());
+            if (spot != null) {
+                spot.vacate();
+            }
         }
+
         activeTickets.remove(ticketNumber);
 
         // 5. Open barrier for departure
