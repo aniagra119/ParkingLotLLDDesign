@@ -58,6 +58,7 @@ A production-grade, extensible Low-Level Design (LLD) for a multi-floor, multi-g
 | **Adapter** | Structural | `com.parkinglot.payment.adapter.RazorpayPaymentAdapter` | Converts proprietary 3rd-party vendor SDK calls (`ExternalRazorpayClient`) to our domain `PaymentProcessor` contract. |
 | **Factory** | Creational | `PaymentProcessorFactory` | Centralizes runtime instantiation of payment adapters based on `PaymentMode`. |
 | **Builder** | Creational | `ParkingLotBuilder` | Assembles complex multi-floor, multi-gate parking lot hierarchies cleanly. |
+| **Observer** | Behavioral | `ParkingEventPublisher`<br>`ParkingEventListener` | Decouples core parking operations from cross-cutting concerns (LED displays, SMS receipts, mobile app notifications, and metrics). |
 
 ---
 
