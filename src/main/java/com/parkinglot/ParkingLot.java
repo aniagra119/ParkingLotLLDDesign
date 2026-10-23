@@ -1,10 +1,6 @@
 package com.parkinglot;
 
-import com.parkinglot.billing.AmenityServiceDecorator;
-import com.parkinglot.billing.BaseParkingCharge;
 import com.parkinglot.billing.Bill;
-import com.parkinglot.billing.BillableItem;
-import com.parkinglot.billing.service.AmenityService;
 import com.parkinglot.enums.GateType;
 import com.parkinglot.enums.ParkingSpotType;
 import com.parkinglot.enums.PaymentMode;
@@ -26,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Facade Pattern: Unified, thread-safe entry point coordinating spot allocation,
- * ticketing, billing, dynamic amenity decorators, payments, and gate barriers.
+ * ticketing, billing, payments, and gate barriers.
  * Strictly adheres to hierarchical delegation without duplicate spot indexing.
  */
 public class ParkingLot {
@@ -95,7 +91,7 @@ public class ParkingLot {
      * Exit settlement flow:
      * 1. Validates active ticket.
      * 2. Computes base fee via Strategy.
-     * 3. Wraps all consumed amenity services dynamically via universal Decorator.
+     * 3. Creates clean, itemized Bill aggregating consumed services.
      * 4. Processes payment via Adapter Factory.
      * 5. Delegates spot release to the appropriate ParkingFloor, cycles barrier, and closes session.
      */
@@ -109,14 +105,9 @@ public class ParkingLot {
 
         // 1. Calculate base fee via Strategy
         double baseFee = feeStrategy.calculateFee(ticket, exitTime);
-        BillableItem billableItem = new BaseParkingCharge(baseFee);
 
-        // 2. Wrap all services consumed during this session via universal Decorator
-        for (AmenityService service : ticket.getConsumedServices()) {
-            billableItem = new AmenityServiceDecorator(billableItem, service);
-        }
-
-        Bill bill = new Bill(ticket, exitTime, billableItem);
+        // 2. Generate clean Bill directly from ticket's consumed services
+        Bill bill = new Bill(ticket, exitTime, baseFee);
 
         // 3. Process payment via Adapter
         PaymentProcessor processor = paymentProcessorFactory.getPaymentProcessor(paymentMode);
@@ -127,7 +118,7 @@ public class ParkingLot {
 
         bill.markPaid();
 
-        // 4. Delegate to appropriate ParkingFloor to vacate physical spot (No redundant spotIndex)
+        // 4. Delegate to appropriate ParkingFloor to vacate physical spot
         ParkingFloor targetFloor = floors.stream()
                 .filter(f -> f.getFloorNumber() == ticket.getFloorNumber())
                 .findFirst()
