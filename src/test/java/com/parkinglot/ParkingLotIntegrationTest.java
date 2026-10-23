@@ -14,6 +14,7 @@ import com.parkinglot.enums.WashPackage;
 import com.parkinglot.model.Coordinates;
 import com.parkinglot.model.Ticket;
 import com.parkinglot.model.Vehicle;
+import com.parkinglot.strategy.fee.FlatRateFeeStrategy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -74,7 +75,7 @@ class ParkingLotIntegrationTest {
     }
 
     @Test
-    @DisplayName("Polymorphic Amenity Decorator: Base fee (₹180) + EV (18.5 kWh @ ₹12 = ₹222) + CarWash (CAR Premium Foam = ₹300) = ₹702.00")
+    @DisplayName("Polymorphic Amenity Aggregation: Base fee (₹180) + EV (18.5 kWh @ ₹12 = ₹222) + CarWash (CAR Premium Foam = ₹300) = ₹702.00")
     void testPolymorphicAmenityBillingPipeline() {
         Vehicle car = new Vehicle("MH-02-EE-1234", VehicleType.CAR);
         Ticket ticket = parkingLot.parkVehicle("ENTRY-1", car);
@@ -99,6 +100,20 @@ class ParkingLotIntegrationTest {
     }
 
     @Test
+    @DisplayName("Should successfully settle exit payment using CASH")
+    void testCashPaymentExit() {
+        Vehicle bike = new Vehicle("KA-05-AB-1234", VehicleType.BIKE);
+        Ticket ticket = parkingLot.parkVehicle("ENTRY-1", bike);
+
+        Instant exitTime = ticket.getEntryTime().plus(Duration.ofHours(1));
+        Bill bill = parkingLot.processExit("EXIT-1", ticket.getTicketNumber(), exitTime, PaymentMode.CASH);
+
+        assertNotNull(bill);
+        assertEquals(BillStatus.PAID, bill.getStatus());
+        assertEquals(20.0, bill.getTotalAmount(), 0.001);
+    }
+
+    @Test
     @DisplayName("Strict 1:1 Spot Compatibility: Truck cannot steal Car or Bike spots when truck spots are full")
     void testSpotCompatibility() {
         Vehicle truck1 = new Vehicle("TRUCK-1", VehicleType.TRUCK);
@@ -117,5 +132,60 @@ class ParkingLotIntegrationTest {
 
         Vehicle truck5 = new Vehicle("TRUCK-5", VehicleType.TRUCK);
         assertThrows(IllegalStateException.class, () -> parkingLot.parkVehicle("ENTRY-1", truck5));
+    }
+
+    @Test
+    @DisplayName("Should throw exception on duplicate exit attempt for an already settled ticket")
+    void testDuplicateExitPrevention() {
+        Vehicle car = new Vehicle("KA-01-DUP-1", VehicleType.CAR);
+        Ticket ticket = parkingLot.parkVehicle("ENTRY-1", car);
+
+        Instant exitTime = ticket.getEntryTime().plus(Duration.ofHours(1));
+        parkingLot.processExit("EXIT-1", ticket.getTicketNumber(), exitTime, PaymentMode.CASH);
+
+        // Attempting to exit again with the same ticket must be rejected
+        assertThrows(IllegalArgumentException.class, () ->
+                parkingLot.processExit("EXIT-1", ticket.getTicketNumber(), exitTime.plusSeconds(60), PaymentMode.CASH)
+        );
+    }
+
+    @Test
+    @DisplayName("Should reject parking or exiting at invalid/mismatched gates")
+    void testGateValidationGuards() {
+        Vehicle car = new Vehicle("KA-01-GATE-1", VehicleType.CAR);
+
+        // Cannot enter through an EXIT gate
+        assertThrows(IllegalStateException.class, () -> parkingLot.parkVehicle("EXIT-1", car));
+
+        // Cannot use a nonexistent gate
+        assertThrows(IllegalArgumentException.class, () -> parkingLot.parkVehicle("NON-EXISTENT", car));
+
+        Ticket ticket = parkingLot.parkVehicle("ENTRY-1", car);
+
+        // Cannot exit through an ENTRY gate
+        assertThrows(IllegalStateException.class, () ->
+                parkingLot.processExit("ENTRY-1", ticket.getTicketNumber(), Instant.now(), PaymentMode.CASH)
+        );
+    }
+
+    @Test
+    @DisplayName("Should support pluggable alternative fee strategy (FlatRateFeeStrategy)")
+    void testCustomFeeStrategyInjection() {
+        ParkingLot flatLot = new ParkingLotBuilder()
+                .withLotId("LOT-FLAT")
+                .withFeeStrategy(new FlatRateFeeStrategy())
+                .addGate("ENTRY-1", GateType.ENTRY)
+                .addGate("EXIT-1", GateType.EXIT)
+                .addFloor("F1", 1, 2, 2, 1)
+                .build();
+
+        Vehicle car = new Vehicle("KA-01-FLAT-1", VehicleType.CAR);
+        Ticket ticket = flatLot.parkVehicle("ENTRY-1", car);
+
+        // Even after 24 hours, flat rate for car is ₹50
+        Instant exitTime = ticket.getEntryTime().plus(Duration.ofHours(24));
+        Bill bill = flatLot.processExit("EXIT-1", ticket.getTicketNumber(), exitTime, PaymentMode.CASH);
+
+        assertEquals(50.0, bill.getTotalAmount(), 0.001);
     }
 }
