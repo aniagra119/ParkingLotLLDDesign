@@ -1,9 +1,8 @@
 package com.parkinglot.strategy.fee.slab;
 
-import com.parkinglot.strategy.fee.FeeCalculationStrategy;
-
+import com.parkinglot.config.ParkingConfiguration;
 import com.parkinglot.enums.VehicleType;
-import java.time.Duration;
+import com.parkinglot.strategy.fee.FeeCalculationStrategy;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.EnumMap;
@@ -17,27 +16,30 @@ import java.util.Objects;
  */
 public abstract class SlabBasedFeeStrategy implements FeeCalculationStrategy {
     protected final Map<VehicleType, List<PricingSlab>> slabsByVehicleType;
+    protected final ParkingConfiguration configuration;
 
-    public SlabBasedFeeStrategy(Map<VehicleType, List<PricingSlab>> slabs) {
+    public SlabBasedFeeStrategy(Map<VehicleType, List<PricingSlab>> slabs, ParkingConfiguration configuration) {
         Objects.requireNonNull(slabs, "Pricing slabs map cannot be null");
         this.slabsByVehicleType = new EnumMap<>(slabs);
+        this.configuration = configuration != null ? configuration : ParkingConfiguration.defaultConfig();
+    }
+
+    public SlabBasedFeeStrategy(Map<VehicleType, List<PricingSlab>> slabs) {
+        this(slabs, ParkingConfiguration.defaultConfig());
     }
 
     /**
-     * Standard duration helper: computes ceiling rounding for billable hours.
+     * Duration helper: delegates to ParkingConfiguration for grace period and ceiling calculations.
      */
     protected long calculateBillableHours(Instant entryTime, Instant exitTime) {
-        if (exitTime.isBefore(entryTime)) {
-            throw new IllegalArgumentException("Exit time cannot be before entry time");
-        }
-        long minutes = Duration.between(entryTime, exitTime).toMinutes();
-        if (minutes <= 0) {
-            minutes = 1; // Minimum charge round-up
-        }
-        return (long) Math.ceil((double) minutes / 60.0);
+        return configuration.calculateBillableHours(entryTime, exitTime);
     }
 
     public Map<VehicleType, List<PricingSlab>> getSlabsByVehicleType() {
         return Collections.unmodifiableMap(slabsByVehicleType);
+    }
+
+    public ParkingConfiguration getConfiguration() {
+        return configuration;
     }
 }

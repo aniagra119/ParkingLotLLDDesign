@@ -47,6 +47,7 @@ To adhere to the **Common Closure Principle (CCP)** and prevent the generic `mod
   * **`com.parkinglot.payment.adapter`**: Secondary Driven Adapters converting third-party APIs into domain contracts (`RazorpayPaymentAdapter`).
   * **`com.parkinglot.payment.external`**: External third-party vendor SDKs and network clients (`ExternalRazorpayClient`).
 * **`com.parkinglot.builder`**: Fluent construction hierarchy (`ParkingLotBuilder`).
+* **`com.parkinglot.config`**: Operational configuration parameters (`ParkingConfiguration` for grace periods, rounding intervals, and penalty caps).
 * **`com.parkinglot.event`**: Event-driven domain messaging and Observer pattern infrastructure (`ParkingEvent`, `VehicleParkedEvent`, `VehicleExitedEvent`, `ParkingEventListener`, `ParkingEventPublisher`).
 * **`com.parkinglot`**: Facade entry point coordinating subsystems (`ParkingLot`).
 
@@ -244,3 +245,20 @@ Coupling these secondary concerns into the synchronous core parking algorithm vi
 * **Domain Events**: Clean, immutable records (`VehicleParkedEvent`, `VehicleExitedEvent`) implementing the `ParkingEvent` interface.
 * **Thread-Safe Event Bus**: `ParkingEventPublisher` maintains a thread-safe subscriber list (`CopyOnWriteArrayList<ParkingEventListener>`) and safely isolates core operations from subscriber runtime exceptions.
 * **Zero Overhead**: Listeners can be attached at startup via `ParkingLotBuilder.withEventListener(...)` or dynamically subscribed at runtime via `parkingLot.subscribeToEvents(...)`.
+
+---
+
+## 12. Architectural Justification: Operational Configuration & Rich Domain Value Objects
+
+### 12.1 Decoupling Operational Policies from Code (`ParkingConfiguration`)
+Hardcoding operational parameters (such as grace period duration, ceiling rounding intervals, or lost ticket fines) directly inside fee calculation classes violates the Open/Closed Principle.
+* **`ParkingConfiguration`**:
+  - `gracePeriod`: Supports complimentary parking for short stays (e.g. 15-minute free airport drop-off).
+  - `roundingInterval`: Configures billing granularities (e.g. 15-minute or 60-minute blocks).
+  - `lostTicketPenalty`: Configurable lost ticket fines.
+  - Injected seamlessly into `SlabBasedFeeStrategy` and `ParkingLotBuilder`.
+
+### 12.2 Rich Vehicle Value Object with Builder
+While maintaining an immutable Java 21 `record` structure for lightweight, thread-safe value semantics, `Vehicle` now provides an optional `Vehicle.Builder` for practical production metadata:
+- Mandatory: `licensePlate`, `type` (enforced via compact constructor).
+- Optional: `color` (for visual parking attendant verification), `ownerPhone` (for SMS parking slips and towing alerts).
