@@ -1,4 +1,4 @@
-package com.parkinglot.strategy;
+package com.parkinglot.strategy.assignment;
 
 import com.parkinglot.enums.ParkingSpotType;
 import com.parkinglot.model.Coordinates;

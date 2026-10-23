@@ -31,6 +31,20 @@ Design a clean, extensible, multi-floor parking lot system capable of managing h
 
 ---
 
+### 2.1 Package Architecture & Bounded Contexts
+To adhere to the **Common Closure Principle (CCP)** and prevent the generic `model` "junk drawer" anti-pattern, components are segmented into distinct bounded contexts:
+
+* **`com.parkinglot.model`**: Physical inventory and active session state (`Vehicle`, `ParkingSpot`, `ParkingFloor`, `Coordinates`, `Ticket`).
+* **`com.parkinglot.strategy.assignment`**: Spatial spot allocation algorithms (`ParkingAssignmentStrategy`, `NearestAvailableSpotStrategy`). Separated by strategy type because spatial routing heuristics evolve independently from financial formulas.
+* **`com.parkinglot.strategy.fee`**: Mathematical pricing and duration billing algorithms (`FeeCalculationStrategy`, `PricingSlab`, `SlabBasedFeeStrategy`, `TieredHourlyFeeStrategy`, `FlatRateFeeStrategy`).
+* **`com.parkinglot.billing`**: Financial settlement domain (`Bill`, `AmenityService`, `CarWashService`, `EvChargingService`). Represents invoices and fiscal transactions rather than physical parking lot assets.
+* **`com.parkinglot.gate`**: Perimeter access control and physical barrier actuators (`Gate`, `Barrier`). Keeps mechanical/IoT actuator state isolated from pure domain logic.
+* **`com.parkinglot.payment`**: External vendor adapters and payment processors (`PaymentProcessor`, `RazorpayPaymentAdapter`, `PaymentProcessorFactory`).
+* **`com.parkinglot.builder`**: Fluent construction hierarchy (`ParkingLotBuilder`).
+* **`com.parkinglot`**: Facade entry point coordinating subsystems (`ParkingLot`).
+
+---
+
 ## 3. Deep Dive: Strategy vs. Adapter + Factory (The Widespread Interview Misconception)
 
 ### 3.1 The Mislabeling
@@ -49,8 +63,8 @@ Because syntactically it matches Strategy: an interface with multiple polymorphi
 > *"Define a family of **algorithms**, encapsulate each one, and make them interchangeable. Strategy lets the **algorithm** vary independently from clients that use it."*
 
 The keyword is **algorithm** — internal computation, sorting, searching, mathematical calculation, or spatial routing:
-* `ParkingAssignmentStrategy` (Nearest Spot vs Distributed vs Random) $\to$ True **Strategy** (spatial graph search algorithms).
-* `FeeCalculationStrategy` (Tiered Slabs vs Flat Rate vs Surge) $\to$ True **Strategy** (mathematical fee computation algorithms).
+* `com.parkinglot.strategy.assignment.ParkingAssignmentStrategy` (Nearest Spot vs Distributed vs Random) $\to$ True **Strategy** (spatial graph search algorithms).
+* `com.parkinglot.strategy.fee.FeeCalculationStrategy` (Tiered Slabs vs Flat Rate vs Surge) $\to$ True **Strategy** (mathematical fee computation algorithms).
 
 #### GoF Definition of Adapter:
 > *"Convert the interface of a class into another interface clients expect. Adapter lets classes work together that couldn't otherwise because of incompatible interfaces."*

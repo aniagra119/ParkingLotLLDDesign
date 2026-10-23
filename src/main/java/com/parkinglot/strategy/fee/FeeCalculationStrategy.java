@@ -1,4 +1,4 @@
-package com.parkinglot.strategy;
+package com.parkinglot.strategy.fee;
 
 import com.parkinglot.model.Ticket;
 import java.time.Instant;

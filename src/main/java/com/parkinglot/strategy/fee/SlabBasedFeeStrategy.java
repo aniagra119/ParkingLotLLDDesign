@@ -1,4 +1,4 @@
-package com.parkinglot.strategy;
+package com.parkinglot.strategy.fee;
 
 import com.parkinglot.enums.VehicleType;
 import java.time.Duration;

@@ -10,10 +10,10 @@ import com.parkinglot.model.ParkingFloor;
 import com.parkinglot.model.ParkingSpot;
 import com.parkinglot.payment.ExternalRazorpayClient;
 import com.parkinglot.payment.PaymentProcessorFactory;
-import com.parkinglot.strategy.FeeCalculationStrategy;
-import com.parkinglot.strategy.NearestAvailableSpotStrategy;
-import com.parkinglot.strategy.ParkingAssignmentStrategy;
-import com.parkinglot.strategy.TieredHourlyFeeStrategy;
+import com.parkinglot.strategy.assignment.NearestAvailableSpotStrategy;
+import com.parkinglot.strategy.assignment.ParkingAssignmentStrategy;
+import com.parkinglot.strategy.fee.FeeCalculationStrategy;
+import com.parkinglot.strategy.fee.TieredHourlyFeeStrategy;
 import java.util.ArrayList;
 import java.util.List;
 
