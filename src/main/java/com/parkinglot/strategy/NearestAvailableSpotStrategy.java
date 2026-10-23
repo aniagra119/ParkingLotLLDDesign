@@ -6,7 +6,6 @@ import com.parkinglot.model.ParkingFloor;
 import com.parkinglot.model.ParkingSpot;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
 
 public class NearestAvailableSpotStrategy implements ParkingAssignmentStrategy {

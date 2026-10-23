@@ -1,13 +1,13 @@
 package com.parkinglot.model;
 
-import com.parkinglot.enums.AmenityServiceType;
+import com.parkinglot.billing.service.AmenityService;
 import com.parkinglot.enums.TicketStatus;
 import java.time.Instant;
 import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public class Ticket {
     private final String ticketNumber;
@@ -15,7 +15,7 @@ public class Ticket {
     private final int floorNumber;
     private final Vehicle vehicle;
     private final Instant entryTime;
-    private final Set<AmenityServiceType> consumedServices;
+    private final List<AmenityService> consumedServices;
     private volatile TicketStatus status;
 
     public Ticket(String spotId, int floorNumber, Vehicle vehicle, Instant entryTime) {
@@ -30,20 +30,20 @@ public class Ticket {
         this.floorNumber = floorNumber;
         this.vehicle = vehicle;
         this.entryTime = entryTime;
-        this.consumedServices = ConcurrentHashMap.newKeySet();
+        this.consumedServices = new CopyOnWriteArrayList<>();
         this.status = TicketStatus.ACTIVE;
     }
 
-    public void addService(AmenityServiceType service) {
-        Objects.requireNonNull(service, "Service cannot be null");
+    public void addService(AmenityService service) {
+        Objects.requireNonNull(service, "Amenity service cannot be null");
         if (this.status != TicketStatus.ACTIVE) {
             throw new IllegalStateException("Cannot add services to inactive ticket: " + ticketNumber);
         }
         consumedServices.add(service);
     }
 
-    public Set<AmenityServiceType> getConsumedServices() {
-        return Collections.unmodifiableSet(consumedServices);
+    public List<AmenityService> getConsumedServices() {
+        return Collections.unmodifiableList(consumedServices);
     }
 
     public synchronized void markPaid() {
