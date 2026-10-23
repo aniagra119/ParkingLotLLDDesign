@@ -1,4 +1,6 @@
-package com.parkinglot.strategy.fee;
+package com.parkinglot.strategy.fee.slab;
+
+import com.parkinglot.strategy.fee.FeeCalculationStrategy;
 
 import com.parkinglot.enums.VehicleType;
 import java.time.Duration;

@@ -1,4 +1,4 @@
-package com.parkinglot.strategy.fee;
+package com.parkinglot.strategy.fee.slab;
 
 import com.parkinglot.enums.VehicleType;
 import com.parkinglot.model.Ticket;

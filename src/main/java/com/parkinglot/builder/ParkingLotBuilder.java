@@ -12,7 +12,7 @@ import com.parkinglot.payment.PaymentProcessorFactory;
 import com.parkinglot.strategy.assignment.NearestAvailableSpotStrategy;
 import com.parkinglot.strategy.assignment.ParkingAssignmentStrategy;
 import com.parkinglot.strategy.fee.FeeCalculationStrategy;
-import com.parkinglot.strategy.fee.TieredHourlyFeeStrategy;
+import com.parkinglot.strategy.fee.slab.TieredHourlyFeeStrategy;
 import java.util.ArrayList;
 import java.util.List;
 
