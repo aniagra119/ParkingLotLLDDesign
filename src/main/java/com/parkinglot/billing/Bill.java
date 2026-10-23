@@ -1,12 +1,14 @@
 package com.parkinglot.billing;
 
+import com.parkinglot.billing.decorator.AmenityServiceDecorator;
+import com.parkinglot.billing.decorator.BaseParkingCharge;
+import com.parkinglot.billing.decorator.BillableItem;
 import com.parkinglot.billing.service.AmenityService;
 import com.parkinglot.enums.BillStatus;
 import com.parkinglot.model.Ticket;
 import com.parkinglot.payment.PaymentStatus;
 import com.parkinglot.payment.PaymentTransaction;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -16,8 +18,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Transactional settlement invoice.
- * Clean, flat data entity designed for database persistence, JSON serialization,
- * audit trail of payment transactions, and transparent itemized breakdown.
+ * Incorporates the Decorator Pattern for itemized charge calculation,
+ * maintains an audit trail of payment transactions, and supports persistence.
  */
 public class Bill {
     private final String billId;
@@ -25,27 +27,38 @@ public class Bill {
     private final Instant exitTime;
     private final double baseParkingFee;
     private final List<AmenityService> services;
+    private final BillableItem billableItem;
     private final double totalAmount;
     private final List<PaymentTransaction> paymentHistory;
     private volatile BillStatus status;
 
-    public Bill(Ticket ticket, Instant exitTime, double baseParkingFee) {
-        if (baseParkingFee < 0) {
-            throw new IllegalArgumentException("Base parking fee cannot be negative");
-        }
+    public Bill(Ticket ticket, Instant exitTime, BillableItem billableItem) {
         this.billId = "BILL-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
         this.ticket = Objects.requireNonNull(ticket, "Ticket cannot be null");
         this.exitTime = Objects.requireNonNull(exitTime, "Exit time cannot be null");
-        this.baseParkingFee = baseParkingFee;
+        this.billableItem = Objects.requireNonNull(billableItem, "Billable item cannot be null");
         this.services = List.copyOf(ticket.getConsumedServices());
         this.paymentHistory = new CopyOnWriteArrayList<>();
 
-        // Linear summation of base fee and polymorphic services
+        // Extract base parking fee from root or calculate directly
         double servicesTotal = this.services.stream()
                 .mapToDouble(AmenityService::calculateCost)
                 .sum();
-        this.totalAmount = Math.round((baseParkingFee + servicesTotal) * 100.0) / 100.0;
+        this.totalAmount = Math.round(billableItem.getCost() * 100.0) / 100.0;
+        this.baseParkingFee = Math.max(0.0, Math.round((this.totalAmount - servicesTotal) * 100.0) / 100.0);
         this.status = BillStatus.UNPAID;
+    }
+
+    public Bill(Ticket ticket, Instant exitTime, double baseParkingFee) {
+        this(ticket, exitTime, buildDecoratedItem(ticket, baseParkingFee));
+    }
+
+    private static BillableItem buildDecoratedItem(Ticket ticket, double baseParkingFee) {
+        BillableItem item = new BaseParkingCharge(baseParkingFee);
+        for (AmenityService service : ticket.getConsumedServices()) {
+            item = new AmenityServiceDecorator(item, service);
+        }
+        return item;
     }
 
     /**
@@ -92,6 +105,10 @@ public class Bill {
         return Collections.unmodifiableList(services);
     }
 
+    public BillableItem getBillableItem() {
+        return billableItem;
+    }
+
     public double getTotalAmount() {
         return totalAmount;
     }
@@ -111,11 +128,6 @@ public class Bill {
     }
 
     public List<String> getItemizedBreakdown() {
-        List<String> lines = new ArrayList<>();
-        lines.add("Base Parking Fee: ₹" + baseParkingFee);
-        for (AmenityService service : services) {
-            lines.add(service.getItemizedDescription());
-        }
-        return lines;
+        return billableItem.getItemizedLines();
     }
 }

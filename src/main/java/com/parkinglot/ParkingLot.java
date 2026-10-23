@@ -3,8 +3,8 @@ package com.parkinglot;
 import com.parkinglot.billing.Bill;
 import com.parkinglot.billing.BillingService;
 import com.parkinglot.enums.GateType;
-import com.parkinglot.enums.ParkingSpotType;
 import com.parkinglot.enums.PaymentMode;
+import com.parkinglot.enums.ParkingSpotType;
 import com.parkinglot.event.ParkingEventListener;
 import com.parkinglot.event.ParkingEventPublisher;
 import com.parkinglot.event.VehicleExitedEvent;
@@ -13,6 +13,7 @@ import com.parkinglot.model.Gate;
 import com.parkinglot.model.ParkingFloor;
 import com.parkinglot.model.ParkingSpot;
 import com.parkinglot.model.Ticket;
+import com.parkinglot.model.User;
 import com.parkinglot.model.Vehicle;
 import com.parkinglot.payment.PaymentProcessorFactory;
 import com.parkinglot.payment.PaymentService;
@@ -31,9 +32,9 @@ import java.util.Objects;
  * Facade Pattern: High-level entry point orchestrating parking operations.
  * Adheres strictly to the Single Responsibility Principle (SRP) by delegating to
  * dedicated subsystem services:
- * - {@link GateController}: Physical gate access and passage validation.
+ * - {@link GateController}: Physical gate access and barrier command execution with operator auditing.
  * - {@link TicketManager}: In-memory active session ticket management.
- * - {@link BillingService}: Base fee calculation and Bill generation.
+ * - {@link BillingService}: Base fee calculation and Bill generation using Decorator Pattern.
  * - {@link PaymentService}: Payment adapter orchestration and audit trail recording.
  * - {@link ParkingEventPublisher}: Event-driven broadcasts (Observer Pattern) for IoT displays, SMS, and analytics.
  */
@@ -86,11 +87,11 @@ public class ParkingLot {
     }
 
     /**
-     * Entry flow: Finds nearest available spot using gate's coordinates and elevation,
-     * allocates spot, registers active ticket, cycles entry gate passage, and publishes VehicleParkedEvent.
+     * Entry flow with human attendant or automated kiosk operator accountability.
      */
-    public synchronized Ticket parkVehicle(String gateId, Vehicle vehicle) {
+    public synchronized Ticket parkVehicle(String gateId, Vehicle vehicle, User operator) {
         Objects.requireNonNull(vehicle, "Vehicle cannot be null");
+        User actor = operator != null ? operator : User.SYSTEM_KIOSK;
         Gate gate = gateController.getValidatedGate(gateId, GateType.ENTRY);
 
         ParkingSpotType requiredSpotType = ParkingSpotType.fromVehicleType(vehicle.type());
@@ -104,9 +105,9 @@ public class ParkingLot {
 
         assignedSpot.assignVehicle(vehicle);
 
-        Ticket ticket = new Ticket(assignedSpot.getSpotId(), assignedSpot.getFloorNumber(), vehicle, Instant.now());
+        Ticket ticket = new Ticket(assignedSpot.getSpotId(), assignedSpot.getFloorNumber(), vehicle, Instant.now(), actor);
         ticketManager.registerTicket(ticket);
-        gateController.cycleGate(gateId);
+        gateController.cycleGate(gateId, actor);
 
         // Broadcast event for notifications, display boards, analytics
         eventPublisher.publish(new VehicleParkedEvent(
@@ -120,28 +121,27 @@ public class ParkingLot {
         return ticket;
     }
 
+    public synchronized Ticket parkVehicle(String gateId, Vehicle vehicle) {
+        return parkVehicle(gateId, vehicle, User.SYSTEM_KIOSK);
+    }
+
     /**
-     * Exit settlement flow:
-     * 1. Validates exit gate.
-     * 2. Retrieves active ticket from TicketManager.
-     * 3. Generates itemized Bill via BillingService.
-     * 4. Settles invoice via PaymentService and logs audit PaymentTransaction.
-     * 5. Releases spot on the appropriate ParkingFloor.
-     * 6. Closes ticket in TicketManager, cycles exit gate, and publishes VehicleExitedEvent.
+     * Exit settlement flow with operator accountability.
      */
-    public synchronized Bill processExit(String gateId, String ticketNumber, Instant exitTime, PaymentMode paymentMode) {
+    public synchronized Bill processExit(String gateId, String ticketNumber, Instant exitTime, PaymentMode paymentMode, User operator) {
+        User actor = operator != null ? operator : User.SYSTEM_KIOSK;
         gateController.getValidatedGate(gateId, GateType.EXIT);
         Ticket ticket = ticketManager.getActiveTicketOrThrow(ticketNumber);
 
         // Generate bill & settle payment via specialized delegates
         Bill bill = billingService.generateBill(ticket, exitTime);
-        PaymentTransaction txn = paymentService.processBillPayment(bill, paymentMode);
+        PaymentTransaction txn = paymentService.processBillPayment(bill, paymentMode, actor);
 
         if (txn.getStatus() != PaymentStatus.SUCCESS) {
             throw new IllegalStateException("Payment processing failed via " + paymentMode + ": " + txn.getFailureReason());
         }
 
-        // Delegate to appropriate ParkingFloor to vacate physical spot
+        // Vacate spot on the physical floor
         ParkingFloor targetFloor = floors.stream()
                 .filter(f -> f.getFloorNumber() == ticket.getFloorNumber())
                 .findFirst()
@@ -155,7 +155,7 @@ public class ParkingLot {
         }
 
         ticketManager.closeTicket(ticketNumber);
-        gateController.cycleGate(gateId);
+        gateController.cycleGate(gateId, actor);
 
         // Broadcast event for external notification/display updates
         eventPublisher.publish(new VehicleExitedEvent(
@@ -168,6 +168,10 @@ public class ParkingLot {
         ));
 
         return bill;
+    }
+
+    public synchronized Bill processExit(String gateId, String ticketNumber, Instant exitTime, PaymentMode paymentMode) {
+        return processExit(gateId, ticketNumber, exitTime, paymentMode, User.SYSTEM_KIOSK);
     }
 
     public void subscribeToEvents(ParkingEventListener listener) {

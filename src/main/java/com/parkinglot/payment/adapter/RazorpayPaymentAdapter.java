@@ -1,6 +1,7 @@
 package com.parkinglot.payment.adapter;
 
 import com.parkinglot.enums.PaymentMode;
+import com.parkinglot.model.User;
 import com.parkinglot.payment.PaymentProcessor;
 import com.parkinglot.payment.PaymentTransaction;
 import com.parkinglot.payment.external.ExternalRazorpayClient;
@@ -18,8 +19,8 @@ public class RazorpayPaymentAdapter implements PaymentProcessor {
     }
 
     @Override
-    public PaymentTransaction processPayment(String billId, double amountInRupees, PaymentMode mode) {
-        PaymentTransaction txn = new PaymentTransaction(billId, amountInRupees, mode);
+    public PaymentTransaction processPayment(String billId, double amountInRupees, PaymentMode mode, User operator) {
+        PaymentTransaction txn = new PaymentTransaction(billId, amountInRupees, mode, operator);
         if (amountInRupees <= 0) {
             txn.markFailed("Amount must be greater than zero");
             return txn;
@@ -35,6 +36,11 @@ public class RazorpayPaymentAdapter implements PaymentProcessor {
             txn.markFailed(response != null ? response : "Unknown gateway failure");
         }
         return txn;
+    }
+
+    @Override
+    public PaymentTransaction processPayment(String billId, double amountInRupees, PaymentMode mode) {
+        return processPayment(billId, amountInRupees, mode, User.SYSTEM_KIOSK);
     }
 
     public ExternalRazorpayClient getRazorpayClient() {

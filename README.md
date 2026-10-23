@@ -1,41 +1,25 @@
 # Multi-Floor Parking Lot Low-Level Design (LLD)
 
+[![Java 21](https://img.shields.io/badge/Java-21-ED8B00?style=for-the-badge&logo=openjdk&logoColor=white)](https://openjdk.org/projects/jdk/21/)
+[![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen?style=for-the-badge&logo=apachemaven&logoColor=white)](pom.xml)
+[![Tests](https://img.shields.io/badge/Tests-69%20Passing-success?style=for-the-badge)](src/test)
+[![Design Patterns](https://img.shields.io/badge/Design_Patterns-GoF_%26_SOLID-blueviolet?style=for-the-badge)](ParkingLotDesign.md)
+
 A production-grade, extensible Low-Level Design (LLD) for a multi-floor, multi-gate automated parking lot system in Java 21, built using first-principles Object-Oriented Design and Gang of Four (GoF) design patterns.
 
 ---
 
-## 1. System Overview & Problem Statement
+## 1. System Requirements & Domain Scope
 
-### Core Requirements
 1. **Multi-Floor Hierarchy**: Multiple physical floors, each containing designated spots for `BIKE`, `CAR`, and `TRUCK`.
-2. **Strict 1:1 Spot Compatibility**: 
-   - A Car spot cannot park bikes; a Truck spot cannot park cars.
-   - Enforced by `ParkingSpotType.canAccommodate(VehicleType)`.
-3. **Automated Ticket Issuance**:
-   - Unique UUID ticket generated on entry.
-   - Records `spotId`, `floorNumber`, `vehicle`, and `entryTime`.
-   - Thread-safe `markPaid()` guarding against duplicate payment exploitation.
-4. **Spatial Spot Allocation (Strategy Pattern)**:
-   - Pluggable allocation algorithm.
-   - Default `NearestAvailableSpotStrategy` finds the closest vacant spot using floor elevation delta first, then 2D Manhattan distance ($|x_1 - x_2| + |y_1 - y_2|$).
-5. **Progressive Tiered Hourly Slabs (Template Strategy)**:
-   - Partial hours are always rounded up to the nearest whole hour ceiling ($\lceil \text{hours} \rceil$).
-   - `SlabBasedFeeStrategy` defines the template algorithm; `TieredHourlyFeeStrategy` calculates the progressive sum over slabs.
-   - **The ₹180.00 Car Benchmark**: A Car parked for 5.5 hours = 6 billable hours:
-     - 0–2h (2 hrs @ ₹25/h) = ₹50
-     - 2–4h (2 hrs @ ₹30/h) = ₹60
-     - 4–6h (2 hrs @ ₹35/h) = ₹70
-     - **Total Base Fee = ₹180.00**.
-6. **Dynamic Amenity Services & Itemized Billing (Polymorphic Aggregation)**:
-   - Avoids the fragile Decorator anti-pattern on persistent invoice data in favor of clean list aggregation (`List<AmenityService>`).
-   - Dynamic self-encapsulating formulas:
-     - `EvChargingService`: Energy-based formula ($\text{kWh Consumed} \times \text{Rate per kWh}$).
-     - `CarWashService`: Dynamic formula ($\text{WashPackage} + \text{VehicleType Surcharge}$).
-   - `Bill` provides full itemized breakdowns with clean line items, supporting standard database persistence and JSON serialization.
-7. **Payment Adapter & Simple Factory**:
-   - External vendor SDKs (e.g. Razorpay) require amounts in paise and vendor-specific payloads.
-   - `RazorpayPaymentAdapter` bridges vendor APIs into our domain `PaymentProcessor`.
-   - `PaymentProcessorFactory` selects the correct processor from `PaymentMode` (`RAZORPAY_UPI`, `RAZORPAY_CARD`, `CASH`).
+2. **Strict 1:1 Spot Compatibility**: Enforced by `ParkingSpotType.canAccommodate(VehicleType)`.
+3. **Automated Ticket Issuance with Operator Auditing**: Entry ticket with timestamp, vehicle plate, spot, and operator (`User issuedBy`).
+4. **Spatial Spot Allocation (Strategy Pattern)**: Nearest available spot allocation using floor elevation delta first, then 2D Manhattan distance ($|x_1 - x_2| + |y_1 - y_2|$).
+5. **Progressive Tiered Hourly Slabs (Template Strategy)**: Ceiling-rounded duration ($\lceil \text{hours} \rceil$) with progressive pricing slabs. The **₹180.00 Car Benchmark** (5.5 hrs $\to$ 6 hrs = ₹50 + ₹60 + ₹70).
+6. **Hardware Actuation (Command Pattern)**: Gates physically own `Barrier` hardware, actuated via `OpenBarrierCommand` and `CloseBarrierCommand` with full operator audit logging.
+7. **Itemized Billing (Decorator Pattern)**: Composable invoices (`BillableItem`, `BaseParkingCharge`, `BillableItemDecorator`, `AmenityServiceDecorator`) dynamically decorating base parking fees with EV charging and car wash services.
+8. **Real-Time Event Bus (Observer Pattern)**: Event-driven decoupling (`VehicleParkedEvent`, `VehicleExitedEvent`) with live occupancy LED boards (`DisplayBoardListener`) and driver SMS notifications (`NotificationListener`).
+9. **Hexagonal Payment Architecture**: Pluggable adapters (`RazorpayPaymentAdapter`, `CashPaymentProcessor`) producing immutable audit trails (`PaymentTransaction`).
 
 ---
 
@@ -53,19 +37,112 @@ A production-grade, extensible Low-Level Design (LLD) for a multi-floor, multi-g
 
 | Pattern | Category | Where Applied | Concrete Architectural Justification |
 | :--- | :--- | :--- | :--- |
-| **Facade** | Structural | `ParkingLot` class | Hides complex subsystem orchestration (`FloorManager`, `GateManager`, `Billing`) behind clean methods (`parkVehicle`, `processExit`). |
-| **Strategy (x2)** | Behavioral | `com.parkinglot.strategy.assignment`<br>`com.parkinglot.strategy.fee` | **1.** Swaps spatial spot allocation heuristics (`NearestAvailableSpotStrategy`).<br>**2.** Swaps mathematical fee algorithms (`TieredHourlyFeeStrategy`, `FlatRateFeeStrategy`). |
-| **Adapter** | Structural | `com.parkinglot.payment.adapter.RazorpayPaymentAdapter` | Converts proprietary 3rd-party vendor SDK calls (`ExternalRazorpayClient`) to our domain `PaymentProcessor` contract. |
-| **Factory** | Creational | `PaymentProcessorFactory` | Centralizes runtime instantiation of payment adapters based on `PaymentMode`. |
-| **Builder** | Creational | `ParkingLotBuilder` | Assembles complex multi-floor, multi-gate parking lot hierarchies cleanly. |
-| **Observer** | Behavioral | `ParkingEventPublisher`<br>`ParkingEventListener` | Decouples core parking operations from cross-cutting concerns (LED displays, SMS receipts, mobile app notifications, and metrics). |
+| **Facade** | Structural | `ParkingLot` class | Orchestrates specialized delegates (`GateController`, `TicketManager`, `BillingService`, `PaymentService`). |
+| **Strategy (x2)** | Behavioral | `ParkingAssignmentStrategy`<br>`FeeCalculationStrategy` | **1.** Swaps spatial spot allocation heuristics.<br>**2.** Swaps progressive fee slab calculations. |
+| **Command** | Behavioral | `BarrierCommand`<br>`OpenBarrierCommand`<br>`CloseBarrierCommand` | Encapsulates barrier hardware movements with operator audit logging. |
+| **Decorator** | Structural | `BillableItemDecorator`<br>`AmenityServiceDecorator` | Dynamically decorates base charges with consumed amenities using the Template Method pattern inside the decorator. |
+| **Observer** | Behavioral | `ParkingEventPublisher`<br>`ParkingEventListener` | Decouples core parking lot logic from LED display updates and driver SMS receipts. |
+| **Adapter** | Structural | `RazorpayPaymentAdapter` | Bridges third-party SDK calls (`ExternalRazorpayClient`) into clean domain contracts. |
+| **Factory** | Creational | `PaymentProcessorFactory` | Centralizes runtime instantiation of payment adapters from `PaymentMode`. |
+| **Builder** | Creational | `ParkingLotBuilder`<br>`Vehicle.Builder` | Assembles complex lots and builds rich vehicle records without telescoping constructors. |
 
 ---
 
-## 4. Architectural Deep-Dives for Revision
+## 4. Package Structure & Bounded Contexts
 
-For detailed notes on the design trade-offs, see [ParkingLotDesign.md](ParkingLotDesign.md):
-- **Strategy vs. Adapter + Factory**: Why payment is NOT a Strategy.
-- **Child-Parent Relationships**: Why `ParkingSpot` stores `floorNumber` instead of full `ParkingFloor`.
-- **Manhattan Distance**: Why grid distance ($|x_1-x_2| + |y_1-y_2|$) reflects physical driving aisles better than Euclidean straight lines.
-- **Dynamic Amenity Billing**: Why services encapsulate their own math (`AmenityService`) rather than hardcoding static fees.
+```
+com.parkinglot/
+├── ParkingLot.java                         # Facade entry point
+├── builder/
+│   └── ParkingLotBuilder.java              # Fluent builder for parking lot hierarchy
+├── command/                                # Command Pattern for barrier actuation
+│   ├── BarrierCommand.java
+│   ├── OpenBarrierCommand.java
+│   ├── CloseBarrierCommand.java
+│   └── BarrierExecution.java
+├── config/                                 # Operational policy configuration
+│   └── ParkingConfiguration.java
+├── enums/                                  # Domain enumerations
+│   ├── BarrierStatus.java
+│   ├── BillStatus.java
+│   ├── GateType.java
+│   ├── ParkingSpotType.java
+│   ├── PaymentMode.java
+│   ├── TicketStatus.java
+│   ├── UserRole.java
+│   ├── VehicleType.java
+│   └── WashPackage.java
+├── event/                                  # Observer Pattern event bus
+│   ├── ParkingEvent.java
+│   ├── ParkingEventListener.java
+│   ├── ParkingEventPublisher.java
+│   ├── VehicleExitedEvent.java
+│   ├── VehicleParkedEvent.java
+│   └── listener/
+│       ├── DisplayBoardListener.java
+│       └── NotificationListener.java
+├── model/                                  # Domain entities & value objects
+│   ├── Barrier.java
+│   ├── Coordinates.java
+│   ├── Gate.java
+│   ├── ParkingFloor.java
+│   ├── ParkingSpot.java
+│   ├── Ticket.java
+│   ├── User.java
+│   └── Vehicle.java
+├── billing/                                # Billing & settlement domain
+│   ├── Bill.java
+│   ├── BillingService.java
+│   ├── decorator/                          # Decorator Pattern for itemized invoices
+│   │   ├── BillableItem.java
+│   │   ├── BaseParkingCharge.java
+│   │   ├── BillableItemDecorator.java
+│   │   └── AmenityServiceDecorator.java
+│   └── service/
+│       ├── AmenityService.java
+│       ├── CarWashService.java
+│       └── EvChargingService.java
+├── payment/                                # Hexagonal payment domain
+│   ├── PaymentProcessor.java
+│   ├── PaymentProcessorFactory.java
+│   ├── PaymentService.java
+│   ├── PaymentStatus.java
+│   ├── PaymentTransaction.java
+│   ├── adapter/
+│   │   └── RazorpayPaymentAdapter.java
+│   ├── external/
+│   │   └── ExternalRazorpayClient.java
+│   └── processor/
+│       └── CashPaymentProcessor.java
+├── service/                                # Subsystem delegates
+│   ├── GateController.java
+│   └── TicketManager.java
+└── strategy/                               # Strategy patterns
+    ├── assignment/
+    │   ├── NearestAvailableSpotStrategy.java
+    │   └── ParkingAssignmentStrategy.java
+    └── fee/
+        ├── FeeCalculationStrategy.java
+        ├── FlatRateFeeStrategy.java
+        └── slab/
+            ├── PricingSlab.java
+            ├── SlabBasedFeeStrategy.java
+            └── TieredHourlyFeeStrategy.java
+```
+
+---
+
+## 5. Build & Test Verification
+
+```bash
+mvn clean test
+```
+
+69 automated tests covering:
+- Spatial distance heuristics & elevation preferences
+- Progressive hourly pricing & the ₹180.00 Car benchmark
+- Physical barrier actuation & command execution audits
+- Decorator pattern itemized billing & amenity chaining
+- Event-driven live occupancy tracking & driver SMS dispatching
+- Operator accountability on tickets and payment transactions
+- Concurrency and thread safety across entry/exit gates
