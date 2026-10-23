@@ -1,6 +1,7 @@
 package com.parkinglot;
 
 import com.parkinglot.billing.Bill;
+import com.parkinglot.billing.BillingService;
 import com.parkinglot.enums.GateType;
 import com.parkinglot.enums.ParkingSpotType;
 import com.parkinglot.enums.PaymentMode;
@@ -9,34 +10,58 @@ import com.parkinglot.model.ParkingFloor;
 import com.parkinglot.model.ParkingSpot;
 import com.parkinglot.model.Ticket;
 import com.parkinglot.model.Vehicle;
-import com.parkinglot.payment.PaymentProcessor;
 import com.parkinglot.payment.PaymentProcessorFactory;
+import com.parkinglot.payment.PaymentService;
 import com.parkinglot.payment.PaymentStatus;
 import com.parkinglot.payment.PaymentTransaction;
+import com.parkinglot.service.GateController;
+import com.parkinglot.service.TicketManager;
 import com.parkinglot.strategy.assignment.ParkingAssignmentStrategy;
 import com.parkinglot.strategy.fee.FeeCalculationStrategy;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Optional;
 
 /**
- * Facade Pattern: Unified, thread-safe entry point coordinating spot allocation,
- * ticketing, billing, payments, and gate barriers.
- * Strictly adheres to hierarchical delegation without duplicate spot indexing.
+ * Facade Pattern: High-level entry point orchestrating parking operations.
+ * Adheres strictly to the Single Responsibility Principle (SRP) by delegating to
+ * dedicated subsystem services:
+ * - {@link GateController}: Physical gate access and passage validation.
+ * - {@link TicketManager}: In-memory active session ticket management.
+ * - {@link BillingService}: Base fee calculation and Bill generation.
+ * - {@link PaymentService}: Payment adapter orchestration and audit trail recording.
  */
 public class ParkingLot {
     private final String lotId;
     private final List<ParkingFloor> floors;
-    private final Map<String, Gate> gates;
     private final ParkingAssignmentStrategy assignmentStrategy;
-    private final FeeCalculationStrategy feeStrategy;
-    private final PaymentProcessorFactory paymentProcessorFactory;
+    private final TicketManager ticketManager;
+    private final GateController gateController;
+    private final BillingService billingService;
+    private final PaymentService paymentService;
 
-    private final Map<String, Ticket> activeTickets;
+    public ParkingLot(
+            String lotId,
+            List<ParkingFloor> floors,
+            ParkingAssignmentStrategy assignmentStrategy,
+            TicketManager ticketManager,
+            GateController gateController,
+            BillingService billingService,
+            PaymentService paymentService) {
+        this.lotId = Objects.requireNonNull(lotId, "Lot ID cannot be null");
+        this.floors = List.copyOf(Objects.requireNonNull(floors, "Floors cannot be null"));
+        this.assignmentStrategy = Objects.requireNonNull(assignmentStrategy, "Assignment strategy cannot be null");
+        this.ticketManager = Objects.requireNonNull(ticketManager, "Ticket manager cannot be null");
+        this.gateController = Objects.requireNonNull(gateController, "Gate controller cannot be null");
+        this.billingService = Objects.requireNonNull(billingService, "Billing service cannot be null");
+        this.paymentService = Objects.requireNonNull(paymentService, "Payment service cannot be null");
+    }
 
+    /**
+     * Backward-compatible constructor delegating to the decomposed service architecture.
+     */
     public ParkingLot(
             String lotId,
             List<ParkingFloor> floors,
@@ -44,33 +69,26 @@ public class ParkingLot {
             ParkingAssignmentStrategy assignmentStrategy,
             FeeCalculationStrategy feeStrategy,
             PaymentProcessorFactory paymentProcessorFactory) {
-        this.lotId = Objects.requireNonNull(lotId, "Lot ID cannot be null");
-        this.floors = List.copyOf(Objects.requireNonNull(floors, "Floors cannot be null"));
-        this.assignmentStrategy = Objects.requireNonNull(assignmentStrategy, "Assignment strategy cannot be null");
-        this.feeStrategy = Objects.requireNonNull(feeStrategy, "Fee strategy cannot be null");
-        this.paymentProcessorFactory = Objects.requireNonNull(paymentProcessorFactory, "Payment processor factory cannot be null");
-
-        this.gates = new ConcurrentHashMap<>();
-        for (Gate gate : gates) {
-            this.gates.put(gate.getGateId(), gate);
-        }
-
-        this.activeTickets = new ConcurrentHashMap<>();
+        this(
+                lotId,
+                floors,
+                assignmentStrategy,
+                new TicketManager(),
+                new GateController(gates),
+                new BillingService(feeStrategy),
+                new PaymentService(paymentProcessorFactory)
+        );
     }
 
     /**
      * Entry flow: Finds nearest available spot using gate's coordinates and elevation,
-     * locks spot, cycles barrier, and issues an immutable Ticket.
+     * allocates spot, registers active ticket, cycles entry gate passage.
      */
     public synchronized Ticket parkVehicle(String gateId, Vehicle vehicle) {
-        Gate gate = getValidatedGate(gateId, GateType.ENTRY);
         Objects.requireNonNull(vehicle, "Vehicle cannot be null");
+        Gate gate = gateController.getValidatedGate(gateId, GateType.ENTRY);
 
-        ParkingSpotType requiredSpotType = switch (vehicle.type()) {
-            case BIKE -> ParkingSpotType.BIKE;
-            case CAR -> ParkingSpotType.CAR;
-            case TRUCK -> ParkingSpotType.TRUCK;
-        };
+        ParkingSpotType requiredSpotType = ParkingSpotType.fromVehicleType(vehicle.type());
 
         ParkingSpot assignedSpot = assignmentStrategy.findSpot(
                 floors,
@@ -81,46 +99,35 @@ public class ParkingLot {
 
         assignedSpot.assignVehicle(vehicle);
 
-        gate.open();
         Ticket ticket = new Ticket(assignedSpot.getSpotId(), assignedSpot.getFloorNumber(), vehicle, Instant.now());
-        activeTickets.put(ticket.getTicketNumber(), ticket);
-        gate.close();
+        ticketManager.registerTicket(ticket);
+        gateController.cycleGate(gateId);
 
         return ticket;
     }
 
     /**
      * Exit settlement flow:
-     * 1. Validates active ticket.
-     * 2. Computes base fee via Strategy.
-     * 3. Creates clean, itemized Bill aggregating consumed services.
-     * 4. Processes payment via Adapter Factory.
-     * 5. Delegates spot release to the appropriate ParkingFloor, cycles barrier, and closes session.
+     * 1. Validates exit gate.
+     * 2. Retrieves active ticket from TicketManager.
+     * 3. Generates itemized Bill via BillingService.
+     * 4. Settles invoice via PaymentService and logs audit PaymentTransaction.
+     * 5. Releases spot on the appropriate ParkingFloor.
+     * 6. Closes ticket in TicketManager and cycles exit gate.
      */
     public synchronized Bill processExit(String gateId, String ticketNumber, Instant exitTime, PaymentMode paymentMode) {
-        Gate gate = getValidatedGate(gateId, GateType.EXIT);
+        gateController.getValidatedGate(gateId, GateType.EXIT);
+        Ticket ticket = ticketManager.getActiveTicketOrThrow(ticketNumber);
 
-        Ticket ticket = activeTickets.get(ticketNumber);
-        if (ticket == null) {
-            throw new IllegalArgumentException("Invalid or inactive ticket: " + ticketNumber);
-        }
-
-        // 1. Calculate base fee via Strategy
-        double baseFee = feeStrategy.calculateFee(ticket, exitTime);
-
-        // 2. Generate clean Bill directly from ticket's consumed services
-        Bill bill = new Bill(ticket, exitTime, baseFee);
-
-        // 3. Process payment via Adapter and record audit transaction
-        PaymentProcessor processor = paymentProcessorFactory.getPaymentProcessor(paymentMode);
-        PaymentTransaction txn = processor.processPayment(bill.getBillId(), bill.getTotalAmount(), paymentMode);
-        bill.recordPayment(txn);
+        // Generate bill & settle payment via specialized delegates
+        Bill bill = billingService.generateBill(ticket, exitTime);
+        PaymentTransaction txn = paymentService.processBillPayment(bill, paymentMode);
 
         if (txn.getStatus() != PaymentStatus.SUCCESS) {
             throw new IllegalStateException("Payment processing failed via " + paymentMode + ": " + txn.getFailureReason());
         }
 
-        // 4. Delegate to appropriate ParkingFloor to vacate physical spot
+        // Delegate to appropriate ParkingFloor to vacate physical spot
         ParkingFloor targetFloor = floors.stream()
                 .filter(f -> f.getFloorNumber() == ticket.getFloorNumber())
                 .findFirst()
@@ -133,24 +140,16 @@ public class ParkingLot {
             }
         }
 
-        activeTickets.remove(ticketNumber);
-
-        // 5. Open barrier for departure
-        gate.open();
-        gate.close();
+        ticketManager.closeTicket(ticketNumber);
+        gateController.cycleGate(gateId);
 
         return bill;
     }
 
-    private Gate getValidatedGate(String gateId, GateType expectedType) {
-        Gate gate = gates.get(gateId);
-        if (gate == null) {
-            throw new IllegalArgumentException("Gate not found: " + gateId);
-        }
-        if (gate.getGateType() != expectedType) {
-            throw new IllegalStateException("Gate " + gateId + " is not an " + expectedType + " gate");
-        }
-        return gate;
+    public int getAvailableSpotCount(ParkingSpotType type) {
+        return floors.stream()
+                .mapToInt(floor -> floor.getAvailableSpots(type).size())
+                .sum();
     }
 
     public String getLotId() {
@@ -161,13 +160,19 @@ public class ParkingLot {
         return Collections.unmodifiableList(floors);
     }
 
-    public int getAvailableSpotCount(ParkingSpotType type) {
-        return floors.stream()
-                .mapToInt(f -> f.getAvailableSpots(type).size())
-                .sum();
+    public TicketManager getTicketManager() {
+        return ticketManager;
     }
 
-    public Ticket getActiveTicket(String ticketNumber) {
-        return activeTickets.get(ticketNumber);
+    public GateController getGateController() {
+        return gateController;
+    }
+
+    public BillingService getBillingService() {
+        return billingService;
+    }
+
+    public PaymentService getPaymentService() {
+        return paymentService;
     }
 }

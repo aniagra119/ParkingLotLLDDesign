@@ -37,8 +37,11 @@ To adhere to the **Common Closure Principle (CCP)** and prevent the generic `mod
 * **`com.parkinglot.model`**: Physical inventory, spatial layout, and entry/exit checkpoints (`Vehicle`, `ParkingSpot`, `ParkingFloor`, `Coordinates`, `Ticket`, `Gate`).
 * **`com.parkinglot.strategy.assignment`**: Spatial spot allocation algorithms (`ParkingAssignmentStrategy`, `NearestAvailableSpotStrategy`). Separated by strategy type because spatial routing heuristics evolve independently from financial formulas.
 * **`com.parkinglot.strategy.fee`**: Mathematical pricing and duration billing algorithms (`FeeCalculationStrategy`, `PricingSlab`, `SlabBasedFeeStrategy`, `TieredHourlyFeeStrategy`, `FlatRateFeeStrategy`).
-* **`com.parkinglot.billing`**: Financial settlement domain (`Bill`, `AmenityService`, `CarWashService`, `EvChargingService`). Represents invoices and fiscal transactions rather than physical parking lot assets.
-* **`com.parkinglot.payment`**: Payment domain contracts, transaction entities, and factory orchestration (`PaymentProcessor`, `PaymentTransaction`, `PaymentStatus`, `PaymentProcessorFactory`).
+* **`com.parkinglot.service`**: Specialized subsystem controllers enforcing Single Responsibility Principle (SRP):
+  * `TicketManager`: In-memory active session ticket management, registration, and lifecycle closing.
+  * `GateController`: Physical gate access validation and boom passage control.
+* **`com.parkinglot.billing`**: Financial settlement domain (`Bill`, `BillingService`, `AmenityService`, `CarWashService`, `EvChargingService`).
+* **`com.parkinglot.payment`**: Payment domain contracts, orchestration (`PaymentService`), transaction entities (`PaymentTransaction`), and factory-selected adapters.
   * **`com.parkinglot.payment.processor`**: Native first-party domain processors (`CashPaymentProcessor`).
   * **`com.parkinglot.payment.adapter`**: Secondary Driven Adapters converting third-party APIs into domain contracts (`RazorpayPaymentAdapter`).
   * **`com.parkinglot.payment.external`**: External third-party vendor SDKs and network clients (`ExternalRazorpayClient`).
@@ -205,3 +208,19 @@ A common flaw in academic LLD designs is simply calling `bill.markPaid()` with a
   - `transactionReference` (external gateway reference or cash receipt ID)
   - `failureReason` (for failed attempts)
 * `Bill` maintains a thread-safe `List<PaymentTransaction> paymentHistory`, enabling retry attempts, accounting reconciliation against external vendor ledgers, and complete auditability without coupling to gateway mechanics.
+
+---
+
+## 10. Architectural Justification: Decomposing the ParkingLot Facade (Single Responsibility Principle)
+
+### 10.1 Avoiding the God Object Anti-Pattern
+In naive LLD designs, `ParkingLot` becomes a bloated "God Object" that mixes spot assignment, active ticket hashmap mutations, gate access validation, fee calculation math, payment gateway calls, and boom passage controls into single multi-responsibility methods.
+
+### 10.2 The Decomposed Delegate Architecture
+We decomposed `ParkingLot` into a pure high-level **Facade** orchestrating four specialized subsystem delegates:
+1. **`TicketManager`**: Owns active ticket storage, retrieval, and closing. Only changes if ticket storage strategy changes (e.g. moving to Redis/PostgreSQL).
+2. **`GateController`**: Owns gate lookup, entry/exit type validation, and passage cycles. Only changes if physical gate hardware protocols change.
+3. **`BillingService`**: Owns invoice calculation and tariff strategy evaluation. Only changes if billing policies change.
+4. **`PaymentService`**: Owns payment adapter execution and transaction audit logging. Only changes if payment orchestration or retry policies change.
+
+`ParkingLot` now retains a single responsibility: **high-level subsystem workflow orchestration**.
