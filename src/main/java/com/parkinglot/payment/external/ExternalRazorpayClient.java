@@ -2,7 +2,8 @@ package com.parkinglot.payment.external;
 
 /**
  * Simulates a vendor proprietary SDK (e.g. com.razorpay.RazorpayClient)
- * with its own distinct method signatures, payload formats (paise), and status codes.
+ * with its own distinct method signatures, payload formats (paise), and status
+ * codes.
  */
 public class ExternalRazorpayClient {
     private final String keyId;
@@ -23,5 +24,9 @@ public class ExternalRazorpayClient {
 
     public String getKeyId() {
         return keyId;
+    }
+
+    public String getKeySecret() {
+        return keySecret;
     }
 }
