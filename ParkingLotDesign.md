@@ -1,6 +1,31 @@
 # Comprehensive Architectural Design & Decision Log
 ## Multi-Floor Parking Lot Low-Level Design (LLD)
 
+### 4.3 Hardware Barrier Command Actuation Sequence
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Attendant as Attendant (Carlos)
+    participant GC as GateController
+    participant OP as OpenBarrierCommand
+    participant CL as CloseBarrierCommand
+    participant B as Barrier Hardware
+
+    Note over Attendant, B: Vehicle approaches gate; operator actuates barrier
+    Attendant ->> GC: openBarrier("E1", operator)
+    GC ->> OP: execute(operator)
+    OP ->> B: raise()
+    OP ->> B: recordExecution(new BarrierExecution("BARRIER-E1", "OPEN_BARRIER", Carlos))
+    Note over B: Barrier status is RAISED; audit history recorded
+
+    Note over Attendant, B: Vehicle safely passes induction loop sensor
+    Attendant ->> GC: closeBarrier("E1", operator)
+    GC ->> CL: execute(operator)
+    CL ->> B: lower()
+    CL ->> B: recordExecution(new BarrierExecution("BARRIER-E1", "CLOSE_BARRIER", Carlos))
+    Note over B: Barrier status is LOWERED; complete audit trail retained
+```
+
 ---
 
 ## 1. System Requirements & Domain Scope
@@ -36,6 +61,246 @@ Design a clean, extensible, multi-floor parking lot system capable of managing h
 | **Builder (x2)** | Creational | `ParkingLotBuilder`<br>`Vehicle.Builder` | Constructs complex parking lots and rich vehicle records cleanly without telescoping constructors. |
 
 ---
+
+### 2.2 Architectural System Topology
+```mermaid
+graph TD
+    Client([Driver / Attendant / Kiosk]) -->|Interacts with| PL[ParkingLot Facade]
+    Builder[ParkingLotBuilder] -->|Assembles| PL
+    
+    subgraph Facade & Subsystem Controllers
+        PL --> TM[TicketManager - Active Sessions]
+        PL --> GC[GateController - Hardware Passage]
+        PL --> BS[BillingService - Invoice Generation]
+        PL --> PS[PaymentService - Settlement Orchestration]
+        PL --> EP[ParkingEventPublisher - Event Bus]
+    end
+    
+    subgraph Hardware & Physical Gate Domain
+        GC -->|Controls| G[Gate Entry/Exit Checkpoints]
+        G -->|Composition| B[Barrier Hardware]
+        B -->|Actuated via| CMD[BarrierCommand Interface]
+        CMD --> OP[OpenBarrierCommand]
+        CMD --> CL[CloseBarrierCommand]
+        OP -->|Records| LOG[BarrierExecution Audit Log]
+        CL -->|Records| LOG
+    end
+
+    subgraph Spatial Spot Allocation
+        PL -->|Allocates via| AS[ParkingAssignmentStrategy]
+        AS --> NAS[NearestAvailableSpotStrategy]
+        PL -->|Manages| PF[ParkingFloor Hierarchy]
+        PF -->|Contains| PS_SPOT[ParkingSpot Inventory]
+    end
+
+    subgraph Billing & Decorator Domain
+        BS -->|Computes Base Fee via| FS[FeeCalculationStrategy]
+        FS --> SBF[SlabBasedFeeStrategy - Template Method]
+        SBF --> THF[TieredHourlyFeeStrategy]
+        SBF --> FRF[FlatRateFeeStrategy]
+        BS -->|Assembles Chain| BI[BillableItem Interface]
+        BI --> BPC[BaseParkingCharge]
+        BI --> BID[BillableItemDecorator]
+        BID --> ASD[AmenityServiceDecorator]
+        ASD --> AS_AMEN[AmenityService: EV / CarWash]
+        BS -->|Generates| BILL[Bill Transaction]
+    end
+
+    subgraph Hexagonal Payment Domain
+        PS -->|Resolves via| PPF[PaymentProcessorFactory Registry]
+        PPF -->|Provides| PP[PaymentProcessor Port]
+        PP --> CPP[CashPaymentProcessor]
+        PP --> RPA[RazorpayPaymentAdapter]
+        RPA -->|Converts Rupees to Paise| ERC[ExternalRazorpayClient]
+        PS -->|Records| PT[PaymentTransaction Audit History]
+        PT -->|Attached to| BILL
+    end
+
+    subgraph Observer Event Layer
+        EP -->|Publishes Events| PE[ParkingEvent]
+        PE --> VPE[VehicleParkedEvent]
+        PE --> VEE[VehicleExitedEvent]
+        EP -->|Notifies| LIS[ParkingEventListener]
+        LIS --> DBL[DisplayBoardListener - Live LED Occupancy]
+        LIS --> NL[NotificationListener - Driver SMS Alerts]
+    end
+```
+
+### 2.3 Comprehensive UML Class Diagram
+```mermaid
+classDiagram
+    direction TB
+
+    class ParkingLot {
+        -String lotId
+        -List~ParkingFloor~ floors
+        -ParkingAssignmentStrategy assignmentStrategy
+        -TicketManager ticketManager
+        -GateController gateController
+        -BillingService billingService
+        -PaymentService paymentService
+        -ParkingEventPublisher eventPublisher
+        +parkVehicle(gateId, vehicle, operator) Ticket
+        +processExit(gateId, ticketNumber, exitTime, paymentMode, operator) Bill
+        +subscribeToEvents(listener)
+        +getAvailableSpotCount(type) int
+    }
+
+    class GateController {
+        -Map~String, Gate~ gates
+        +getValidatedGate(gateId, expectedType) Gate
+        +openBarrier(gateId, operator)
+        +closeBarrier(gateId, operator)
+        +cycleGate(gateId, operator)
+    }
+
+    class Gate {
+        -String gateId
+        -GateType gateType
+        -int floorNumber
+        -Coordinates coordinates
+        -Barrier barrier
+        +open()
+        +close()
+        +isOpen() boolean
+        +getBarrier() Barrier
+    }
+
+    class Barrier {
+        -String barrierId
+        -BarrierStatus status
+        -List~BarrierExecution~ auditHistory
+        +raise()
+        +lower()
+        +isRaised() boolean
+        +recordExecution(execution)
+    }
+
+    class BarrierCommand {
+        <<interface>>
+        +execute(operator)
+        +getCommandName() String
+    }
+
+    class OpenBarrierCommand {
+        -Barrier barrier
+        +execute(operator)
+    }
+
+    class CloseBarrierCommand {
+        -Barrier barrier
+        +execute(operator)
+    }
+
+    class TicketManager {
+        -Map~String, Ticket~ activeTickets
+        +registerTicket(ticket)
+        +getActiveTicketOrThrow(ticketNumber) Ticket
+        +closeTicket(ticketNumber) Ticket
+    }
+
+    class BillingService {
+        -FeeCalculationStrategy feeStrategy
+        +generateBill(ticket, exitTime) Bill
+    }
+
+    class BillableItem {
+        <<interface>>
+        +getCost() double
+        +getItemizedLines() List~String~
+    }
+
+    class BaseParkingCharge {
+        -double cost
+        +getCost() double
+        +getItemizedLines() List~String~
+    }
+
+    class BillableItemDecorator {
+        <<abstract>>
+        #BillableItem wrappedItem
+        +getCost() double
+        +getItemizedLines() List~String~
+        #getAdditionalCost()* double
+        #getItemizedLine()* String
+    }
+
+    class AmenityServiceDecorator {
+        -AmenityService amenityService
+        #getAdditionalCost() double
+        #getItemizedLine() String
+    }
+
+    class PaymentService {
+        -PaymentProcessorFactory paymentProcessorFactory
+        +processBillPayment(bill, mode, operator) PaymentTransaction
+    }
+
+    class PaymentProcessorFactory {
+        -Map~PaymentMode, PaymentProcessor~ registry
+        +registerProcessor(mode, processor)
+        +getPaymentProcessor(mode) PaymentProcessor
+    }
+
+    class PaymentProcessor {
+        <<interface>>
+        +processPayment(billId, amount, mode, operator) PaymentTransaction
+    }
+
+    class RazorpayPaymentAdapter {
+        -ExternalRazorpayClient razorpayClient
+        +processPayment(billId, amount, mode, operator) PaymentTransaction
+    }
+
+    class CashPaymentProcessor {
+        +processPayment(billId, amount, mode, operator) PaymentTransaction
+    }
+
+    class FeeCalculationStrategy {
+        <<interface>>
+        +calculateFee(ticket, exitTime) double
+    }
+
+    class SlabBasedFeeStrategy {
+        <<abstract>>
+        #Map~VehicleType, List~PricingSlab~~ slabsByVehicleType
+        #ParkingConfiguration configuration
+        +calculateFee(ticket, exitTime) double
+        #computeSlabFee(billableHours, slabs)* double
+    }
+
+    class TieredHourlyFeeStrategy {
+        #computeSlabFee(billableHours, slabs) double
+    }
+
+    class ParkingEventPublisher {
+        -List~ParkingEventListener~ listeners
+        +subscribe(listener)
+        +publish(event)
+    }
+
+    ParkingLot *-- TicketManager
+    ParkingLot *-- GateController
+    ParkingLot *-- BillingService
+    ParkingLot *-- PaymentService
+    ParkingLot *-- ParkingEventPublisher
+    GateController o-- Gate
+    Gate *-- Barrier
+    BarrierCommand <|.. OpenBarrierCommand
+    BarrierCommand <|.. CloseBarrierCommand
+    OpenBarrierCommand --> Barrier
+    CloseBarrierCommand --> Barrier
+    BillingService o-- FeeCalculationStrategy
+    FeeCalculationStrategy <|.. SlabBasedFeeStrategy
+    SlabBasedFeeStrategy <|-- TieredHourlyFeeStrategy
+    BillableItem <|.. BaseParkingCharge
+    BillableItem <|.. BillableItemDecorator
+    BillableItemDecorator <|-- AmenityServiceDecorator
+    PaymentService o-- PaymentProcessorFactory
+    PaymentProcessorFactory o-- PaymentProcessor
+    PaymentProcessor <|.. RazorpayPaymentAdapter
+    PaymentProcessor <|.. CashPaymentProcessor
+```
 
 ### 2.1 Package Architecture & Bounded Contexts
 To adhere to the **Common Closure Principle (CCP)** and prevent the generic `model` "junk drawer" anti-pattern, components are segmented into distinct bounded contexts:
@@ -96,6 +361,31 @@ Directly toggling boolean flags on gates prevents auditing and makes asynchronou
 
 ---
 
+### 4.3 Hardware Actuation Sequence (Command Pattern)
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Attendant as Attendant (Carlos)
+    participant GC as GateController
+    participant OP as OpenBarrierCommand
+    participant CL as CloseBarrierCommand
+    participant B as Barrier Hardware
+
+    Note over Attendant, B: Vehicle approaches gate; operator actuates barrier
+    Attendant ->> GC: openBarrier("E1", operator)
+    GC ->> OP: execute(operator)
+    OP ->> B: raise()
+    OP ->> B: recordExecution(new BarrierExecution("BARRIER-E1", "OPEN_BARRIER", Carlos))
+    Note over B: Barrier status is RAISED; audit history recorded
+
+    Note over Attendant, B: Vehicle safely passes induction loop sensor
+    Attendant ->> GC: closeBarrier("E1", operator)
+    GC ->> CL: execute(operator)
+    CL ->> B: lower()
+    CL ->> B: recordExecution(new BarrierExecution("BARRIER-E1", "CLOSE_BARRIER", Carlos))
+    Note over B: Barrier status is LOWERED; complete audit trail retained
+```
+
 ## 5. Itemized Billing: Composable Invoices via Decorator Pattern
 
 ### 5.1 The Template Method within the Decorator Pattern
@@ -120,6 +410,62 @@ To provide flexible pricing composition without cluttering domain entities:
 
 ---
 
+### 5.2 Billing Settlement & Decorator Flow
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Driver as Driver
+    actor Cashier as Exit Attendant (Diana)
+    participant PL as ParkingLot Facade
+    participant TM as TicketManager
+    participant BS as BillingService
+    participant SBF as SlabBasedFeeStrategy (Template Method)
+    participant THF as TieredHourlyFeeStrategy
+    participant DEC as Decorator Chain (BaseParkingCharge + AmenityServiceDecorator)
+    participant PS as PaymentService
+    participant PPF as PaymentProcessorFactory
+    participant RPA as RazorpayPaymentAdapter
+    participant ERC as ExternalRazorpayClient
+    participant Spot as ParkingSpot
+    participant GC as GateController
+    participant EP as ParkingEventPublisher
+    participant DB as DisplayBoardListener
+    participant NL as NotificationListener
+
+    Driver ->> Cashier: Present Ticket at Exit Gate (X1)
+    Cashier ->> PL: processExit("X1", ticketNumber, exitTime, PaymentMode.RAZORPAY_UPI, operator)
+    PL ->> TM: getActiveTicketOrThrow(ticketNumber)
+    TM -->> PL: Ticket
+    PL ->> BS: generateBill(ticket, exitTime)
+    BS ->> SBF: calculateFee(ticket, exitTime) (Template Method)
+    SBF ->> SBF: calculateBillableHours(entry, exit) -> 6 billable hrs
+    SBF ->> THF: computeSlabFee(6, slabs)
+    THF -->> SBF: Base Fee ₹180.00
+    SBF -->> BS: Base Fee ₹180.00
+    BS ->> DEC: Assemble BaseParkingCharge(180.0) + AmenityServiceDecorator(EV/Wash)
+    DEC -->> BS: BillableItem (Total: ₹260.00, Itemized Lines)
+    BS -->> PL: Bill
+    PL ->> PS: processBillPayment(bill, RAZORPAY_UPI, operator)
+    PS ->> PPF: getPaymentProcessor(RAZORPAY_UPI)
+    PPF -->> PS: RazorpayPaymentAdapter
+    PS ->> RPA: processPayment(billId, 260.0, mode, operator)
+    RPA ->> ERC: captureTransaction(billId, 26000 paise, "INR")
+    ERC -->> RPA: "SUCCESS_TXN_12345"
+    RPA -->> PS: PaymentTransaction (SUCCESS, processedBy: Diana)
+    PS ->> Bill: recordPayment(txn) (Transitions Bill & Ticket to PAID)
+    PL ->> Spot: vacate()
+    PL ->> TM: closeTicket(ticketNumber)
+    PL ->> GC: cycleGate("X1", operator) (Barrier raised & lowered)
+    PL ->> EP: publish(VehicleExitedEvent)
+    par Notify Display
+        EP ->> DB: onEvent(VehicleExitedEvent) (Increment Available Count)
+    and Notify Driver
+        EP ->> NL: onEvent(VehicleExitedEvent) (Send Settled Invoice SMS)
+    end
+    PL -->> Cashier: Bill (Paid, Itemized Breakdown)
+    Cashier -->> Driver: Receipt & Barrier opened
+```
+
 ## 6. User and Operator Domain Model (Accountability & Audit)
 
 ### 6.1 Roles & Identity
@@ -141,6 +487,30 @@ To decouple core parking operations from external subsystems:
 * **`NotificationListener`**: Dispatches automated SMS/mobile receipts and entry slips to vehicle drivers using `Vehicle.ownerPhone()`.
 
 ---
+
+### 7.2 Entity Lifecycle State Machines
+```mermaid
+stateDiagram-v2
+    direction LR
+
+    state "Ticket Lifecycle" as TL {
+        [*] --> ACTIVE: parkVehicle()
+        ACTIVE --> PAID: processExit() / recordPayment()
+        PAID --> [*]
+    }
+
+    state "Bill Settlement Lifecycle" as BL {
+        [*] --> UNPAID: generateBill()
+        UNPAID --> PAID: PaymentTransaction (SUCCESS)
+        PAID --> [*]
+    }
+
+    state "Barrier Hardware State" as BHS {
+        [*] --> LOWERED: Initial State
+        LOWERED --> RAISED: OpenBarrierCommand.execute()
+        RAISED --> LOWERED: CloseBarrierCommand.execute()
+    }
+```
 
 ## 8. Hexagonal Organization of the Payment Bounded Context & The Registry Pattern
 
