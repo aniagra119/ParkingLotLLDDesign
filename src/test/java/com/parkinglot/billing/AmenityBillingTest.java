@@ -3,10 +3,12 @@ package com.parkinglot.billing;
 import com.parkinglot.billing.service.CarWashService;
 import com.parkinglot.billing.service.EvChargingService;
 import com.parkinglot.enums.BillStatus;
+import com.parkinglot.enums.PaymentMode;
 import com.parkinglot.enums.VehicleType;
 import com.parkinglot.enums.WashPackage;
 import com.parkinglot.model.Ticket;
 import com.parkinglot.model.Vehicle;
+import com.parkinglot.payment.PaymentTransaction;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -69,5 +71,31 @@ class AmenityBillingTest {
 
         // Marking paid twice must throw IllegalStateException
         assertThrows(IllegalStateException.class, bill::markPaid);
+    }
+
+    @Test
+    @DisplayName("Bill should track audit history of failed and successful payment transactions")
+    void testBillPaymentHistoryAuditTrail() {
+        Ticket ticket = new Ticket("S2", 1, new Vehicle("DL-01-1111", VehicleType.CAR), Instant.now());
+        Bill bill = new Bill(ticket, ticket.getEntryTime().plusSeconds(3600), 100.0);
+
+        // 1. Record failed transaction
+        PaymentTransaction failedTxn = new PaymentTransaction(bill.getBillId(), bill.getTotalAmount(), PaymentMode.RAZORPAY_UPI);
+        failedTxn.markFailed("NETWORK_TIMEOUT");
+        bill.recordPayment(failedTxn);
+
+        assertEquals(BillStatus.UNPAID, bill.getStatus());
+        assertEquals(1, bill.getPaymentHistory().size());
+        assertFalse(bill.getSuccessfulPayment().isPresent());
+
+        // 2. Retry with Cash and succeed
+        PaymentTransaction successTxn = new PaymentTransaction(bill.getBillId(), bill.getTotalAmount(), PaymentMode.CASH);
+        successTxn.markSuccess("CASH-SETTLED-001");
+        bill.recordPayment(successTxn);
+
+        assertEquals(BillStatus.PAID, bill.getStatus());
+        assertEquals(2, bill.getPaymentHistory().size());
+        assertTrue(bill.getSuccessfulPayment().isPresent());
+        assertEquals("CASH-SETTLED-001", bill.getSuccessfulPayment().get().getTransactionReference());
     }
 }

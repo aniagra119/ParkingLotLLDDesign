@@ -11,6 +11,8 @@ import com.parkinglot.model.Ticket;
 import com.parkinglot.model.Vehicle;
 import com.parkinglot.payment.PaymentProcessor;
 import com.parkinglot.payment.PaymentProcessorFactory;
+import com.parkinglot.payment.PaymentStatus;
+import com.parkinglot.payment.PaymentTransaction;
 import com.parkinglot.strategy.assignment.ParkingAssignmentStrategy;
 import com.parkinglot.strategy.fee.FeeCalculationStrategy;
 import java.time.Instant;
@@ -109,14 +111,14 @@ public class ParkingLot {
         // 2. Generate clean Bill directly from ticket's consumed services
         Bill bill = new Bill(ticket, exitTime, baseFee);
 
-        // 3. Process payment via Adapter
+        // 3. Process payment via Adapter and record audit transaction
         PaymentProcessor processor = paymentProcessorFactory.getPaymentProcessor(paymentMode);
-        boolean paymentSuccess = processor.processPayment(bill.getBillId(), bill.getTotalAmount());
-        if (!paymentSuccess) {
-            throw new IllegalStateException("Payment processing failed via " + paymentMode);
-        }
+        PaymentTransaction txn = processor.processPayment(bill.getBillId(), bill.getTotalAmount(), paymentMode);
+        bill.recordPayment(txn);
 
-        bill.markPaid();
+        if (txn.getStatus() != PaymentStatus.SUCCESS) {
+            throw new IllegalStateException("Payment processing failed via " + paymentMode + ": " + txn.getFailureReason());
+        }
 
         // 4. Delegate to appropriate ParkingFloor to vacate physical spot
         ParkingFloor targetFloor = floors.stream()

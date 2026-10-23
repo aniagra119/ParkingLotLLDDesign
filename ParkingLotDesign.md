@@ -38,7 +38,7 @@ To adhere to the **Common Closure Principle (CCP)** and prevent the generic `mod
 * **`com.parkinglot.strategy.assignment`**: Spatial spot allocation algorithms (`ParkingAssignmentStrategy`, `NearestAvailableSpotStrategy`). Separated by strategy type because spatial routing heuristics evolve independently from financial formulas.
 * **`com.parkinglot.strategy.fee`**: Mathematical pricing and duration billing algorithms (`FeeCalculationStrategy`, `PricingSlab`, `SlabBasedFeeStrategy`, `TieredHourlyFeeStrategy`, `FlatRateFeeStrategy`).
 * **`com.parkinglot.billing`**: Financial settlement domain (`Bill`, `AmenityService`, `CarWashService`, `EvChargingService`). Represents invoices and fiscal transactions rather than physical parking lot assets.
-* **`com.parkinglot.payment`**: Payment domain contract (Port) and factory orchestration (`PaymentProcessor`, `PaymentProcessorFactory`).
+* **`com.parkinglot.payment`**: Payment domain contracts, transaction entities, and factory orchestration (`PaymentProcessor`, `PaymentTransaction`, `PaymentStatus`, `PaymentProcessorFactory`).
   * **`com.parkinglot.payment.processor`**: Native first-party domain processors (`CashPaymentProcessor`).
   * **`com.parkinglot.payment.adapter`**: Secondary Driven Adapters converting third-party APIs into domain contracts (`RazorpayPaymentAdapter`).
   * **`com.parkinglot.payment.external`**: External third-party vendor SDKs and network clients (`ExternalRazorpayClient`).
@@ -192,3 +192,16 @@ In naive OOP designs, everything relating to payments is dumped into a single `p
    - Contains zero knowledge of our parking lot domain, `Bill`, or `Ticket`.
 
 This Ports & Adapters (Hexagonal) separation guarantees that introducing Stripe, PayPal, or mock testing environments requires writing an adapter in `payment.adapter` without touching core domain rules.
+
+### 9.2 Transaction Entity & Payment Audit Trails
+A common flaw in academic LLD designs is simply calling `bill.markPaid()` with a single boolean flag, destroying all payment history. In real-world financial architectures:
+* Every payment attempt produces a `PaymentTransaction` entity recording:
+  - `paymentId` (Unique ID)
+  - `billId`
+  - `amount`
+  - `paymentMode`
+  - `attemptedAt` timestamp
+  - `status` (`PENDING`, `SUCCESS`, `FAILED`, `REFUNDED`)
+  - `transactionReference` (external gateway reference or cash receipt ID)
+  - `failureReason` (for failed attempts)
+* `Bill` maintains a thread-safe `List<PaymentTransaction> paymentHistory`, enabling retry attempts, accounting reconciliation against external vendor ledgers, and complete auditability without coupling to gateway mechanics.

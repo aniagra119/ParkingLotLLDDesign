@@ -1,9 +1,11 @@
 package com.parkinglot.payment;
 
+import com.parkinglot.enums.PaymentMode;
+
 /**
- * Domain interface for payment execution.
- * Completely decoupled from specific vendor SDKs, protocols, or wire formats.
+ * Domain interface (Port) for payment execution.
+ * Completely decoupled from specific vendor SDKs, wire formats, or external APIs.
  */
 public interface PaymentProcessor {
-    boolean processPayment(String billId, double amountInRupees);
+    PaymentTransaction processPayment(String billId, double amountInRupees, PaymentMode mode);
 }
