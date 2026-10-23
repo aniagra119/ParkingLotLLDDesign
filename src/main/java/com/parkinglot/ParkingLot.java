@@ -4,7 +4,7 @@ import com.parkinglot.billing.Bill;
 import com.parkinglot.enums.GateType;
 import com.parkinglot.enums.ParkingSpotType;
 import com.parkinglot.enums.PaymentMode;
-import com.parkinglot.gate.Gate;
+import com.parkinglot.model.Gate;
 import com.parkinglot.model.ParkingFloor;
 import com.parkinglot.model.ParkingSpot;
 import com.parkinglot.model.Ticket;
@@ -79,10 +79,10 @@ public class ParkingLot {
 
         assignedSpot.assignVehicle(vehicle);
 
-        gate.getBarrier().open();
+        gate.open();
         Ticket ticket = new Ticket(assignedSpot.getSpotId(), assignedSpot.getFloorNumber(), vehicle, Instant.now());
         activeTickets.put(ticket.getTicketNumber(), ticket);
-        gate.getBarrier().close();
+        gate.close();
 
         return ticket;
     }
@@ -134,8 +134,8 @@ public class ParkingLot {
         activeTickets.remove(ticketNumber);
 
         // 5. Open barrier for departure
-        gate.getBarrier().open();
-        gate.getBarrier().close();
+        gate.open();
+        gate.close();
 
         return bill;
     }

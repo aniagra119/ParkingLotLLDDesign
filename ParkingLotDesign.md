@@ -15,7 +15,7 @@ Design a clean, extensible, multi-floor parking lot system capable of managing h
 4. **Spatial Spot Allocation (Strategy Pattern)**: Nearest available spot across floors (calculated using floor elevation delta first, then 2D Manhattan coordinates) in $O(1)$ lookup time relative to the entry gate.
 5. **Tiered Hourly Fee Math (Template Strategy)**: Progressive fee calculation with hourly ceiling rounding ($\lceil \text{hours} \rceil$).
 6. **Dynamic Amenity Billing (Polymorphic Services)**: Replaced naive Decorator pattern with an extensible `AmenityService` hierarchy (EV kWh-based, Wash package-based) directly aggregated in `Bill` for clean database serialization and itemized receipts.
-7. **Payment & Barrier Decoupling**: Pluggable payment processors (Razorpay adapter) and physical boom barrier actuator isolation.
+7. **Payment Gateway Integration**: Pluggable payment processors (Razorpay adapter) decoupled from core parking session orchestration.
 
 ---
 
@@ -34,11 +34,10 @@ Design a clean, extensible, multi-floor parking lot system capable of managing h
 ### 2.1 Package Architecture & Bounded Contexts
 To adhere to the **Common Closure Principle (CCP)** and prevent the generic `model` "junk drawer" anti-pattern, components are segmented into distinct bounded contexts:
 
-* **`com.parkinglot.model`**: Physical inventory and active session state (`Vehicle`, `ParkingSpot`, `ParkingFloor`, `Coordinates`, `Ticket`).
+* **`com.parkinglot.model`**: Physical inventory, spatial layout, and entry/exit checkpoints (`Vehicle`, `ParkingSpot`, `ParkingFloor`, `Coordinates`, `Ticket`, `Gate`).
 * **`com.parkinglot.strategy.assignment`**: Spatial spot allocation algorithms (`ParkingAssignmentStrategy`, `NearestAvailableSpotStrategy`). Separated by strategy type because spatial routing heuristics evolve independently from financial formulas.
 * **`com.parkinglot.strategy.fee`**: Mathematical pricing and duration billing algorithms (`FeeCalculationStrategy`, `PricingSlab`, `SlabBasedFeeStrategy`, `TieredHourlyFeeStrategy`, `FlatRateFeeStrategy`).
 * **`com.parkinglot.billing`**: Financial settlement domain (`Bill`, `AmenityService`, `CarWashService`, `EvChargingService`). Represents invoices and fiscal transactions rather than physical parking lot assets.
-* **`com.parkinglot.gate`**: Perimeter access control and physical barrier actuators (`Gate`, `Barrier`). Keeps mechanical/IoT actuator state isolated from pure domain logic.
 * **`com.parkinglot.payment`**: External vendor adapters and payment processors (`PaymentProcessor`, `RazorpayPaymentAdapter`, `PaymentProcessorFactory`).
 * **`com.parkinglot.builder`**: Fluent construction hierarchy (`ParkingLotBuilder`).
 * **`com.parkinglot`**: Facade entry point coordinating subsystems (`ParkingLot`).
@@ -152,3 +151,14 @@ Partial hours are rounded up using ceiling math: $\text{billableHours} = \lceil 
    * **Slab 3 (Hours 4 to 6 = 2 hrs)**: $2 \times ₹35 = \mathbf{₹70}$
    * **Slab 4 (Hours 6+ = 0 hrs)**: $0 \times ₹45 = \mathbf{₹0}$
 4. **Total Base Fee**: $₹50 + ₹60 + ₹70 = \mathbf{₹180.00}$.
+
+---
+
+## 8. Architectural Justification: Elimination of `Barrier` and Inclusion of `Gate` in Model
+
+### 8.1 The Pass-Through Anti-Pattern
+In tutorials or over-engineered LLD attempts, developers often create a separate `Barrier` class with simple `open()` and `close()` methods and a dedicated `gate` package.
+In practice:
+1. **Pass-Through Overhead Without Value**: Without hardware message queues, asynchronous IoT drivers, or the **Command Pattern** (e.g. queuing or undoing barrier movements), `Barrier` acts as a useless 1-line wrapper.
+2. **Law of Demeter Violation**: Invocations like `gate.getBarrier().open()` force external callers to traverse through `Gate` to reach an internal component.
+3. **Domain Reality**: `Gate` is a physical spatial model entity (residing on a floor, with 2D/3D coordinates and a gate type) that directly controls entry/exit access. Moving `Gate` into `com.parkinglot.model` and exposing `gate.open()` / `gate.close()` directly eliminates redundant packaging and ceremonial abstractions while maintaining clean domain cohesion.

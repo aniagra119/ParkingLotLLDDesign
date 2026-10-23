@@ -3,8 +3,7 @@ package com.parkinglot.builder;
 import com.parkinglot.ParkingLot;
 import com.parkinglot.enums.GateType;
 import com.parkinglot.enums.ParkingSpotType;
-import com.parkinglot.gate.Barrier;
-import com.parkinglot.gate.Gate;
+import com.parkinglot.model.Gate;
 import com.parkinglot.model.Coordinates;
 import com.parkinglot.model.ParkingFloor;
 import com.parkinglot.model.ParkingSpot;
@@ -54,8 +53,7 @@ public class ParkingLotBuilder {
     }
 
     public ParkingLotBuilder addGate(String gateId, GateType type, int floorNumber, Coordinates coordinates) {
-        Barrier barrier = new Barrier("BARRIER-" + gateId);
-        gates.add(new Gate(gateId, type, barrier, floorNumber, coordinates));
+        gates.add(new Gate(gateId, type, floorNumber, coordinates));
         return this;
     }
 
