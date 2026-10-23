@@ -4,11 +4,12 @@ import com.parkinglot.enums.ParkingSpotType;
 
 public class ParkingSpot {
     private final String spotId;
+    private final int floorNumber;
     private final ParkingSpotType spotType;
     private volatile Vehicle currentVehicle;
     private final Coordinates coordinates;
 
-    public ParkingSpot(String spotId, ParkingSpotType spotType, Coordinates coordinates) {
+    public ParkingSpot(String spotId, int floorNumber, ParkingSpotType spotType, Coordinates coordinates) {
         if (spotId == null || spotId.isBlank()) {
             throw new IllegalArgumentException("Spot ID cannot be null or empty");
         }
@@ -19,8 +20,13 @@ public class ParkingSpot {
             throw new IllegalArgumentException("Coordinates cannot be null");
         }
         this.spotId = spotId;
+        this.floorNumber = floorNumber;
         this.spotType = spotType;
         this.coordinates = coordinates;
+    }
+
+    public int getFloorNumber() {
+        return this.floorNumber;
     }
 
     public Coordinates getCoordinates() {
